@@ -113,7 +113,7 @@ fi
 # Bell monitoring for notifications (activity is too noisy - triggers on any output)
 tmux set-option -g monitor-activity off
 tmux set-option -g monitor-bell on
-tmux set-option -g bell-action other  # Flag bells from non-active windows
+tmux set-option -g bell-action none  # Do not forward bell to outer terminal (prevents dock icon bounce)
 
 # Window sizing: resize all windows/panes together when terminal resizes.
 # NOTE: `window-size manual` segfaults homebrew tmux inside
@@ -485,7 +485,7 @@ if [[ "$POSITION" == "top" ]] || [[ "$POSITION" == "bottom" ]]; then
     tmux bind-key -T root MouseDown1Status select-window -t =
     tmux bind-key -T root MouseDown2Status run-shell "$CURRENT_DIR/bin/tabby hook kill-window #{window_index}"
     tmux bind-key -T root MouseDown3Status command-prompt -I "#W" "rename-window '%%' ; set-window-option @tabby_name_locked 1"
-    tmux bind-key -T root MouseDown1StatusRight new-window
+    tmux bind-key -T root MouseDown1StatusRight run-shell "$NEW_WINDOW_BIN -client-tty '#{client_tty}'"
 fi
 
 # All lifecycle scripts now handled by Go binaries via `tabby hook`

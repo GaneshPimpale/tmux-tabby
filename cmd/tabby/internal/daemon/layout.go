@@ -75,7 +75,7 @@ func flushOpsBatched(ops []ResizeOp, reason string) {
 			}
 			switch op.Kind {
 			case OpResizeWindow:
-				args = append(args, "resize-window", "-t", op.Target, "-x", fmtInt(op.X), "-y", fmtInt(op.Y))
+				args = append(args, "resize-window", "-t", op.Target, "-x", fmtInt(op.X), "-y", fmtInt(op.Y), ";", "set-window-option", "-t", op.Target, "-u", "window-size")
 			case OpResizePaneX:
 				args = append(args, "resize-pane", "-t", op.Target, "-x", fmtInt(op.X))
 			case OpResizePaneY:
@@ -87,7 +87,7 @@ func flushOpsBatched(ops []ResizeOp, reason string) {
 				reason, op.Kind, op.Target, op.X, op.Y, op.Subject, op.Reason)
 		}
 		if last {
-			args = append(args, ";", "set-option", "-g", "@tabby_spawning", "0")
+			args = append(args, ";", "set-option", "-g", "@tabby_spawning", "0", ";", "set-option", "-g", "window-size", "latest")
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

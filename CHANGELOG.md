@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Creating a new window now inherits the active window's group and color (unless the directory defines its own color), and inserts directly below the current window in the tab bar.
+- On a phone the pane title now appears at the top of the screen as well as above the button bar. The content pane's own border strip was blanked below 100 columns to avoid ruling a line across the top row; it carries the same `<icon> <tab name> | <pane title>` label the bottom strip does, so the tab you are on is identifiable without looking to the foot of the screen. Costs no rows — the strip was already drawn, just empty.
+
+### Fixed
+
+- Bell diamond indicators (`◆`) now clear reliably when viewed in grouped sessions and suppress stale alert flags from unattached peer sessions.
+- Sidebar width flapping between window switches: removed passive renderer resize arming, gated `PlanWidthSync` on group layout ownership, and guarded against false adoption of mobile clamp presets on desktop windows.
+- Stale client active window election: fixed active elector idle window from 1500s to 3s so sleeping mobile clients are not treated as active peers competing with desktop input.
+- Stale client pruning: reduced idle detachment threshold on geometry-mismatched clients to 5 minutes so dropped mobile connections are cleanly pruned.
+- Manual window renames: preserved manual renames across directory sync and AI tab summarizer passes by recognizing disabled automatic-rename.
+- Dead renderer zombie recovery: `spawnRenderersForNewWindows` now verifies daemon socket connectivity and replaces unresponsive renderer panes instead of skipping with `skip_has_pane`.
+- Window size locking: reconcile passes re-assert `set-option -g window-size latest` to prevent windows from getting stuck in `manual` mode after window resizes.
+
+## [v0.2.2] — 2026-09-06
+
+### Added
+
+- Widgets fold away. Name any of `clock`, `pet`, `git`, `session`, `claude`, `teamclaude`, `kimi` in `sidebar.collapsible_widgets` (or `[all]`) and each one gets a disclosure icon at its top-left, the same `⊟` / `⊞` control tab groups use. Click it and the widget collapses to a single row, click again and it comes back. While the widget is open the icon rides on the widget's existing first row, so the affordance costs no vertical space. A collapsed widget is not rendered at all, so a sidebar with teamclaude and the clock folded costs two rows instead of nine. The state lives in the `@tabby_collapsed_widgets` tmux option, so it survives a daemon restart and every client on the server sees the same thing.
+
+- `widgets.clock.single_line` puts the date beside the time instead of under it, with `separator` (default two spaces) between them. On a sidebar too narrow to fit both, the date drops rather than wrapping onto the row the setting exists to save.
+
+- `sidebar.header.padding_top` adds transparent rows above the TABBY banner, matching the `padding_bottom` that was already there. Together with `height`, the banner's total rows are now set from config in both directions; the click region moves with the padding, so the banner stays clickable where it is drawn.
+
+
 ## [v0.2.1] — 2026-09-01
 
 ### Changed

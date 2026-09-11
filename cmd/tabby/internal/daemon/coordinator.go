@@ -121,12 +121,34 @@ func tmuxOutputTrimmed(args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// clientMatchesSessionGroup checks whether a client row (with sessionID and sessionGroup)
+// belongs to this daemon's session or session group.
+func clientMatchesSessionGroup(clientSessID, clientSessGroup, daemonSessID, daemonSessGroup string) bool {
+	if daemonSessGroup != "" && clientSessGroup == daemonSessGroup {
+		return true
+	}
+	if daemonSessID != "" && clientSessID == daemonSessID {
+		return true
+	}
+	if daemonSessGroup == "" && daemonSessID == "" {
+		return true
+	}
+	return false
+}
+
 func clientTTYForWindow(windowID string) string {
 	windowID = strings.TrimSpace(windowID)
 	if windowID == "" {
 		return ""
 	}
-	out, err := tmuxOutputCtx(listClientsArgs("#{client_tty}|||#{window_id}|||#{client_activity}")...)
+	mySess := daemonSessionID()
+	myGroup := ""
+	if mySess != "" {
+		myGroup = displayMessageIn(mySess, "#{session_group}")
+	}
+
+	// server-wide list-clients: query all clients and filter to our session or session group
+	out, err := tmuxOutputCtx("list-clients", "-F", "#{client_tty}|||#{session_id}|||#{session_group}|||#{window_id}|||#{client_activity}")
 	if err != nil {
 		return ""
 	}
@@ -138,19 +160,23 @@ func clientTTYForWindow(windowID string) string {
 			continue
 		}
 		parts := strings.Split(line, "|||")
-		if len(parts) < 2 {
+		if len(parts) < 5 {
 			continue
 		}
 		tty := strings.TrimSpace(parts[0])
-		win := strings.TrimSpace(parts[1])
+		sessID := strings.TrimSpace(parts[1])
+		sessGroup := strings.TrimSpace(parts[2])
+		win := strings.TrimSpace(parts[3])
 		if tty == "" || win != windowID {
 			continue
 		}
+		if !clientMatchesSessionGroup(sessID, sessGroup, mySess, myGroup) {
+			continue
+		}
+
 		activity := int64(0)
-		if len(parts) >= 3 {
-			if v, err := strconv.ParseInt(strings.TrimSpace(parts[2]), 10, 64); err == nil {
-				activity = v
-			}
+		if v, err := strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64); err == nil {
+			activity = v
 		}
 		if activity > bestActivity {
 			bestActivity = activity
@@ -164,26 +190,33 @@ func clientTTYForWindow(windowID string) string {
 // client is currently looking at. A window can be its session's "active" window
 // while the session is fully detached (nobody is actually watching), so this is
 // the real "the user can see it" signal — used to acknowledge AI input
-// indicators only once they've genuinely been seen.
-// attachedClientWindows is a var, not a plain func, so tests can stub it. It
-// asks the live tmux server which windows are on screen, and several unseen-
-// attention decisions turn on the answer — so left unstubbed it makes those
-// tests read the developer's own session. A test asserting on window "@1"
-// silently inverts whenever a real client happens to be sitting on @1.
+// indicators and clear finished bells once they've genuinely been seen.
+// attachedClientWindows is a var, not a plain func, so tests can stub it.
 var attachedClientWindows = func() map[string]bool {
 	set := map[string]bool{}
-	out, err := tmuxOutputCtx(listClientsArgs("#{client_tty}|||#{window_id}")...)
+	mySess := daemonSessionID()
+	myGroup := ""
+	if mySess != "" {
+		myGroup = displayMessageIn(mySess, "#{session_group}")
+	}
+
+	// server-wide list-clients: query all clients and filter to our session or session group
+	out, err := tmuxOutputCtx("list-clients", "-F", "#{client_tty}|||#{session_id}|||#{session_group}|||#{window_id}")
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		parts := strings.Split(strings.TrimSpace(line), "|||")
-		if len(parts) < 2 {
+		if len(parts) < 4 {
 			continue
 		}
-		tty := strings.TrimSpace(parts[0])
-		win := strings.TrimSpace(parts[1])
-		if tty != "" && win != "" {
+		sessID := strings.TrimSpace(parts[1])
+		sessGroup := strings.TrimSpace(parts[2])
+		win := strings.TrimSpace(parts[3])
+		if win == "" {
+			continue
+		}
+		if clientMatchesSessionGroup(sessID, sessGroup, mySess, myGroup) {
 			set[win] = true
 		}
 	}
@@ -674,7 +707,10 @@ type Coordinator struct {
 	windowVisualPos map[string]int // window ID -> visual position in sidebar
 	config          *config.Config
 	collapsedGroups map[string]bool
-	spinnerFrame    int
+	// collapsedWidgets holds the sidebar widgets the user has collapsed to
+	// their single disclosure row; persisted in @tabby_collapsed_widgets.
+	collapsedWidgets map[string]bool
+	spinnerFrame     int
 
 	// Git state (cached)
 	gitBranch string
@@ -921,8 +957,9 @@ type Coordinator struct {
 	// later landed on that index -- a notification about work the user never
 	// started. Every sibling AI map here is keyed by a stable id for the same
 	// reason.
-	aiBellUntil map[string]int64 // window ID → unix timestamp when bell expires (window-level)
-	aiWorking   map[string]bool  // pane ID → pane body showed a live progress line (cached, see paneWorking)
+	aiBellUntil   map[string]int64 // window ID → unix timestamp when bell expires (window-level)
+	bellDismissed map[string]bool  // window ID → bell viewed and dismissed; suppresses stale tmux window_bell_flag
+	aiWorking     map[string]bool  // pane ID → pane body showed a live progress line (cached, see paneWorking)
 	aiWorkingAt map[string]int64 // pane ID → unix timestamp aiWorking was last measured
 
 	// Callback to sync sidebar client widths in the server's client map.
@@ -1695,6 +1732,7 @@ func NewCoordinator(sessionID string) *Coordinator {
 		cwdColors:          make(map[string]CWDColorMapping),
 		gitTopCache:        make(map[string]string),
 		collapsedGroups:    make(map[string]bool),
+		collapsedWidgets:   make(map[string]bool),
 		clientWidths:       make(map[string]int),
 		clientHeights:      make(map[string]int),
 		clientPrevWidth:    make(map[string]int),
@@ -1707,6 +1745,7 @@ func NewCoordinator(sessionID string) *Coordinator {
 		prevPaneBusy:       make(map[string]bool),
 		prevPaneTitle:      make(map[string]string),
 		aiBellUntil:        make(map[string]int64),
+		bellDismissed:      make(map[string]bool),
 		hookPaneActive:     make(map[string]bool),
 		hookPaneBusyIdleAt: make(map[string]int64),
 		aiQuestion:         make(map[string]bool),
@@ -1750,6 +1789,7 @@ func NewCoordinator(sessionID string) *Coordinator {
 
 	// Load collapsed groups from tmux option
 	c.loadCollapsedGroups()
+	c.loadCollapsedWidgets()
 
 	// Load pet state from shared file
 	c.loadPetState()
@@ -2929,7 +2969,7 @@ func (c *Coordinator) ApplyNewWindowGroup() {
 	if status.State != "ready" || status.WindowID == "" {
 		return
 	}
-	if status.Group == "" || status.Group == "Default" {
+	if status.Group == "" {
 		return
 	}
 	tmuxCmd("set-window-option", "-t", status.WindowID, "@tabby_group", status.Group).Run()
@@ -3026,7 +3066,9 @@ func (c *Coordinator) HandleWindowSelect(activeWindowID string) {
 	// bell is an unseen-notification, and this is the user seeing it. The
 	// input "?" is deliberately left alone: it marks an unanswered question,
 	// and switching to the window doesn't answer it.
-	tmuxCmd("set-option", "-w", "-t", activeWindowID, "@tabby_bell", "").Run()
+	delete(c.aiBellUntil, activeWindowID)
+	c.bellDismissed[activeWindowID] = true
+	tmuxCmd("set-option", "-w", "-t", activeWindowID, "-u", "@tabby_bell").Run()
 
 	cfg := c.GetConfig()
 	if cfg == nil || !cfg.PaneHeader.BorderFromTab {
@@ -3380,16 +3422,33 @@ func (c *Coordinator) SelectPreviousWindow() {
 // empty result means the query failed and callers should not treat any client
 // as detached.
 func attachedClientTTYs() map[string]bool {
+	mySess := daemonSessionID()
+	myGroup := ""
+	if mySess != "" {
+		myGroup = displayMessageIn(mySess, "#{session_group}")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	out, err := tmux.CmdContext(ctx, listClientsArgs("#{client_tty}")...).Output()
+	// server-wide list-clients: query all clients and filter to our session or session group
+	out, err := tmux.CmdContext(ctx, "list-clients", "-F", "#{client_tty}|||#{session_id}|||#{session_group}").Output()
 	if err != nil {
 		return nil
 	}
 	set := make(map[string]bool, 4)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			set[t] = true
+		parts := strings.Split(strings.TrimSpace(line), "|||")
+		if len(parts) < 3 {
+			continue
+		}
+		tty := strings.TrimSpace(parts[0])
+		sessID := strings.TrimSpace(parts[1])
+		sessGroup := strings.TrimSpace(parts[2])
+		if tty == "" {
+			continue
+		}
+		if clientMatchesSessionGroup(sessID, sessGroup, mySess, myGroup) {
+			set[tty] = true
 		}
 	}
 	return set
@@ -5036,6 +5095,33 @@ func (c *Coordinator) presetGroupForCWD(cwd string) string {
 	return best
 }
 
+// resolveDirColor returns the color associated with cwd (from remembered
+// appearance in cwdColors or a matching configured group's working_dir theme),
+// or "" if none is defined.
+func (c *Coordinator) resolveDirColor(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	top := c.gitToplevel(cwd)
+	if top != "" {
+		if mapping, ok := c.getCWDColorMapping(top); ok && strings.TrimSpace(mapping.Color) != "" {
+			return strings.TrimSpace(mapping.Color)
+		}
+	}
+	if mapping, ok := c.getCWDColorMapping(cwd); ok && strings.TrimSpace(mapping.Color) != "" {
+		return strings.TrimSpace(mapping.Color)
+	}
+	if presetGroup := c.presetGroupForCWD(cwd); presetGroup != "" && c.config != nil {
+		for _, g := range c.config.Groups {
+			if g.Name == presetGroup && strings.TrimSpace(g.Theme.Bg) != "" {
+				return strings.TrimSpace(g.Theme.Bg)
+			}
+		}
+	}
+	return ""
+}
+
 // expandWorkingDir normalizes a config working_dir for prefix matching: a leading
 // "~/" (or a bare "~") expands to the user's home directory, and the result is
 // cleaned. Returns "" for empty input.
@@ -5544,12 +5630,20 @@ func (c *Coordinator) processAIToolStates(preloaded *processTree) []tmuxSetOptio
 		// already unsets @tabby_bell on select, but the in-memory expiry
 		// re-asserted win.Bell every cycle until it aged out — so the ◆ came
 		// straight back when you switched away. Drop both on view.
+		//
+		// In grouped sessions, unattached peer sessions retain a stale
+		// window_bell_flag in tmux's alerts.c indefinitely, which re-arms
+		// win.Bell on every list-windows. bellDismissed tracks that the user
+		// already viewed and dismissed the alert until a new bell event arrives.
 		if viewed {
 			delete(c.aiBellUntil, win.ID)
+			c.bellDismissed[win.ID] = true
 			if win.Bell {
 				win.Bell = false
 				pending = append(pending, tmuxSetOption{windowID: win.ID, key: "@tabby_bell", unset: true})
 			}
+		} else if c.bellDismissed[win.ID] {
+			win.Bell = false
 		} else if expiry, ok := c.aiBellUntil[win.ID]; ok {
 			// Check for expiring bell indicators (window-level)
 			if now < expiry {
@@ -5583,6 +5677,7 @@ func (c *Coordinator) processAIToolStates(preloaded *processTree) []tmuxSetOptio
 			if anyPrevAI && !viewed {
 				win.Bell = true
 				win.Input = false
+				delete(c.bellDismissed, win.ID)
 				c.aiBellUntil[win.ID] = now + 30
 				pending = append(pending, tmuxSetOption{windowID: win.ID, key: "@tabby_bell", value: "1"})
 				pending = append(pending, tmuxSetOption{windowID: win.ID, key: "@tabby_input", value: ""})
@@ -5969,6 +6064,7 @@ func (c *Coordinator) paneWorking(paneID string, now int64) bool {
 // ever viewed.
 func (c *Coordinator) clearDoneBell(win *tmux.Window, pending []tmuxSetOption) []tmuxSetOption {
 	delete(c.aiBellUntil, win.ID)
+	c.bellDismissed[win.ID] = true
 	if win.Bell {
 		win.Bell = false
 		pending = append(pending, tmuxSetOption{windowID: win.ID, key: "@tabby_bell", unset: true})
@@ -6015,6 +6111,7 @@ func (c *Coordinator) settleAIPane(pane *tmux.Pane, win *tmux.Window, viewed boo
 		return pending
 	}
 	win.Bell = true
+	delete(c.bellDismissed, win.ID)
 	c.aiBellUntil[win.ID] = now + aiDoneBellSeconds
 	logEvent("AI_DONE_BELL pane=%s window=%d", pane.ID, win.Index)
 	return append(pending, tmuxSetOption{windowID: win.ID, key: "@tabby_bell", value: "1"})
@@ -10838,7 +10935,7 @@ func (c *Coordinator) switchClientsOnWindow(sourceWindowID, targetWindowID strin
 	// server-wide list-clients: the clicking client can be attached to a peer
 	// session in the group (the sidebar pane is owned by one daemon but shared
 	// by every linked window), so rows must not be pre-filtered to our session.
-	out, err := tmuxCmd("list-clients", "-F", "#{client_tty}|#{client_session}|#{client_window}|#{session_id}").Output()
+	out, err := tmuxCmd("list-clients", "-F", "#{client_tty}|#{client_session}|#{client_window}|#{session_id}|#{client_activity}").Output()
 	if err != nil {
 		return nil
 	}
@@ -10853,15 +10950,17 @@ func (c *Coordinator) switchClientsOnWindow(sourceWindowID, targetWindowID strin
 	daemonSession := strings.TrimSpace(c.sessionID)
 
 	type ttyResolution struct {
-		tty     string
-		window  string
-		session string
+		tty      string
+		window   string
+		session  string
+		activity int64
 	}
 	var fallbackTTYs []string
 	ttySession := map[string]string{}
+	ttyActivity := map[string]int64{}
 	resolutions := []ttyResolution{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), "|", 4)
+		parts := strings.Split(strings.TrimSpace(line), "|")
 		if len(parts) < 3 {
 			continue
 		}
@@ -10869,16 +10968,21 @@ func (c *Coordinator) switchClientsOnWindow(sourceWindowID, targetWindowID strin
 		sess := strings.TrimSpace(parts[1])
 		idx := strings.TrimSpace(parts[2])
 		sessID := sess
-		if len(parts) == 4 && strings.TrimSpace(parts[3]) != "" {
+		if len(parts) >= 4 && strings.TrimSpace(parts[3]) != "" {
 			sessID = strings.TrimSpace(parts[3])
+		}
+		var act int64
+		if len(parts) >= 5 {
+			act, _ = strconv.ParseInt(strings.TrimSpace(parts[4]), 10, 64)
 		}
 		if tty == "" {
 			continue
 		}
 		ttySession[tty] = sessID
+		ttyActivity[tty] = act
 		if sess == daemonSession || daemonSession == "" {
 			if winID, ok := idxToID[idx]; ok {
-				resolutions = append(resolutions, ttyResolution{tty: tty, window: winID, session: sessID})
+				resolutions = append(resolutions, ttyResolution{tty: tty, window: winID, session: sessID, activity: act})
 				continue
 			}
 		}
@@ -10894,17 +10998,31 @@ func (c *Coordinator) switchClientsOnWindow(sourceWindowID, targetWindowID strin
 			go func() {
 				defer wg.Done()
 				curOut, _ := tmuxCmd("display-message", "-p", "-c", tty, "#{window_id}").Output()
-				fallbackResults[i] = ttyResolution{tty: tty, window: strings.TrimSpace(string(curOut)), session: ttySession[tty]}
+				fallbackResults[i] = ttyResolution{tty: tty, window: strings.TrimSpace(string(curOut)), session: ttySession[tty], activity: ttyActivity[tty]}
 			}()
 		}
 		wg.Wait()
 		resolutions = append(resolutions, fallbackResults...)
 	}
 
+	idleLimit := int64(parkIdleSeconds())
+	now := time.Now().Unix()
+	anyActive := false
+	for _, r := range resolutions {
+		if r.window == src && r.activity > 0 && now-r.activity < idleLimit {
+			anyActive = true
+			break
+		}
+	}
+
 	ttys := []string{}
 	ttyTargets := map[string]string{}
 	for _, r := range resolutions {
 		if r.window != src {
+			continue
+		}
+		if anyActive && (r.activity == 0 || now-r.activity >= idleLimit) {
+			logEvent("SELECT_WINDOW_PERCLIENT_SKIP_IDLE tty=%s session=%s idle_s=%d", r.tty, r.session, now-r.activity)
 			continue
 		}
 		ttys = append(ttys, r.tty)
@@ -11174,12 +11292,14 @@ func distinctClientWidths(listClientsOutput string) int {
 	return len(seen)
 }
 
-// attachedClientWidthSpread reports whether the session currently has
-// attached clients of differing widths.
+// attachedClientWidthSpread reports whether the server currently has
+// attached clients of differing widths across sessions.
 func (c *Coordinator) attachedClientWidthSpread() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	out, err := tmux.CmdContext(ctx, listClientsArgs("#{client_width}")...).Output()
+	// server-wide list-clients: width differences between grouped session peers
+	// (e.g. desktop 188x53 vs mobile 55x45) must be detected across all sessions.
+	out, err := tmux.CmdContext(ctx, "list-clients", "-F", "#{client_width}").Output()
 	if err != nil {
 		return false
 	}
@@ -11281,6 +11401,10 @@ func (c *Coordinator) adoptGlobalSidebarWidth(activeWindowID string, width int) 
 // after layout changes).
 func (c *Coordinator) PlanWidthSync(activeWindowID string, force bool) []ResizeOp {
 	start := time.Now()
+	if !c.OwnsGroupLayout() {
+		logEvent("WIDTH_SYNC_SKIP reason=not_layout_owner session=%s", c.sessionID)
+		return nil
+	}
 	if c.sidebarHidden {
 		logEvent("WIDTH_SYNC_SKIP reason=sidebar_collapsed active=%s force=%v", activeWindowID, force)
 		return nil
@@ -11512,6 +11636,8 @@ func (c *Coordinator) PlanWidthSync(activeWindowID string, force bool) []ResizeO
 				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=switch_at_profile_clamp win=%s width=%d global=%d", prevAdoptCandidate.windowID, w, c.globalWidth)
 			} else if w == keyboardWidth && keyboardWidth < c.globalWidth {
 				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=switch_at_keyboard_clamp win=%s width=%d global=%d", prevAdoptCandidate.windowID, w, c.globalWidth)
+			} else if (w == 10 || w == 15 || w == 20) && c.globalWidth >= 25 {
+				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=switch_at_tier_preset win=%s width=%d global=%d", prevAdoptCandidate.windowID, w, c.globalWidth)
 			} else {
 				logEvent("WIDTH_SYNC_ADOPT active=%s from=%d to=%d confirmed=switch", prevAdoptCandidate.windowID, c.globalWidth, w)
 				c.adoptGlobalSidebarWidth(prevAdoptCandidate.windowID, w)
@@ -11555,7 +11681,9 @@ func (c *Coordinator) PlanWidthSync(activeWindowID string, force bool) []ResizeO
 			// precisely because panes disagree with the global — would then
 			// clobber a legitimate wider width on every drift check.
 			profileClamped := c.boundedSidebarWidthForWindow(activeWindowID, c.globalWidth, clientHeightSnapshot[activeWindowID])
-			atProfileClamp := effectiveActive == profileClamped && profileClamped < c.globalWidth
+			activeWinWidth := windowWidths[activeWindowID]
+			atProfileClamp := (effectiveActive == profileClamped && profileClamped < c.globalWidth) ||
+				(activeWinWidth > sidebarTabletMaxWindowCols() && (effectiveActive <= 20 || effectiveActive == 15 || effectiveActive == 10))
 			// A sidebar is never legitimately the full window. A freshly
 			// spawned window is briefly all-sidebar before the content split
 			// lands, and a layout flip leaves it that way; the panel audit
@@ -11564,7 +11692,6 @@ func (c *Coordinator) PlanWidthSync(activeWindowID string, force bool) []ResizeO
 			// transient here and adopting it poisons globalWidth with the
 			// window width, which then yanks every other window on each audit
 			// tick. Use the same test so the two checks agree.
-			activeWinWidth := windowWidths[activeWindowID]
 			fullWidth := activeWinWidth > 0 && effectiveActive >= activeWinWidth-2
 			// Third clamp, same reasoning as atCap and atProfileClamp: a short
 			// client (an on-screen keyboard eating the viewport, or any client
@@ -11630,22 +11757,16 @@ func (c *Coordinator) PlanWidthSync(activeWindowID string, force bool) []ResizeO
 				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=at_profile_clamp active=%s measured=%d global=%d clamp=%d", activeWindowID, effectiveActive, c.globalWidth, profileClamped)
 			} else if atKeyboardClamp {
 				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=at_keyboard_clamp active=%s measured=%d global=%d clamp=%d hold=%v hold_expired=%v height=%d", activeWindowID, effectiveActive, c.globalWidth, keyboardWidth, keyboardHoldPending, keyboardHoldPending && now.After(keyboardHoldExpiry), activeHeight)
-			} else if multiClientSizes || measurementsDisagree {
-				// Ambiguous, not wrong. Two attached clients of different sizes
-				// make tmux reflow the window to whichever acted last, and a pass
-				// landing mid-resize reads a width that is still moving; neither
-				// measurement is authoritative on sight. Refusing outright was
-				// worse than useless though — the per-window loop below then
-				// pulled the active window back to the stale global, so every
-				// sidebar drag on a desktop with a second client attached snapped
-				// straight back (WIDTH_SYNC_ADOPT_SKIP reason=multi_client_sizes
-				// followed by current=35 target=15). Hold the measurement as a
-				// candidate, leave the active window at the width it has, and
-				// adopt once a second pass corroborates it.
+			} else if measurementsDisagree {
+				// Mid-reflow: the renderer and tmux list-panes disagree on width.
+				// This happens during initial window splits and geometry transitions;
+				// adopting it propagates transient garbage to every window.
+				logEvent("WIDTH_SYNC_ADOPT_SKIP reason=measurements_disagree active=%s reported=%d measured=%d global=%d", activeWindowID, reportedActive, effectiveActive, c.globalWidth)
+			} else if multiClientSizes {
+				// Ambiguous: two attached clients of different sizes make tmux
+				// reflow the window to whichever acted last. Hold the measurement
+				// as a candidate and adopt once a second pass corroborates it.
 				reason := "multi_client_sizes"
-				if !multiClientSizes {
-					reason = "resize_in_flight"
-				}
 				confirmed, next := confirmWidthAdoptCandidate(prevAdoptCandidate, activeWindowID, effectiveActive, activeWinWidth, now)
 				c.pendingAdopt = next
 				if !confirmed {
@@ -14205,6 +14326,7 @@ func (c *Coordinator) generateSidebarHeader(width int, clientID string) (string,
 	hdr := c.config.Sidebar.Header
 	headerText := hdr.ResolvedText()
 	headerHeight := hdr.ResolvedHeight()
+	paddingTop := hdr.ResolvedPaddingTop()
 	paddingBottom := hdr.ResolvedPaddingBottom()
 	centered := headerBoolDefault(hdr.Centered)
 	activeColor := headerBoolDefault(hdr.ActiveColor)
@@ -14315,6 +14437,11 @@ func (c *Coordinator) generateSidebarHeader(width int, clientID string) (string,
 	// Render header rows. When the header has a bg colour, fill each row with the
 	// same lighter -> base gradient the live tab rows use so the TABBY header reads
 	// as part of the same surface; otherwise keep the flat/transparent layout.
+	// Transparent padding rows above the header (no bg color)
+	for i := 0; i < paddingTop; i++ {
+		s.WriteString(strings.Repeat(" ", width) + "\n")
+	}
+
 	for line := 0; line < headerHeight; line++ {
 		// Build the row's text portion (may carry fg ANSI); the fill pads the rest.
 		rowContent := ""
@@ -14351,7 +14478,7 @@ func (c *Coordinator) generateSidebarHeader(width int, clientID string) (string,
 	// window list below.
 	if headerHeight > 0 {
 		regions = append(regions, daemon.ClickableRegion{
-			StartLine: 0, EndLine: headerHeight - 1,
+			StartLine: paddingTop, EndLine: paddingTop + headerHeight - 1,
 			Action: "sidebar_header_area", Target: "",
 		})
 	}
@@ -15932,7 +16059,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "clock",
 			zone:     pos,
 			priority: c.config.Widgets.Clock.Priority,
-			content:  constrainWidgetWidth(c.renderClockWidget(clientID, width), width),
+			content: c.collapsibleWidget(clientID, "clock", width, func() string {
+				return constrainWidgetWidth(c.renderClockWidget(clientID, width), width)
+			}),
 		})
 	}
 
@@ -15946,7 +16075,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "pet",
 			zone:     pos,
 			priority: c.config.Widgets.Pet.Priority,
-			content:  c.renderPetWidget(clientID, width, skipDebugBar),
+			content: c.collapsibleWidget(clientID, "pet", width, func() string {
+				return c.renderPetWidget(clientID, width, skipDebugBar)
+			}),
 		})
 	}
 
@@ -15960,7 +16091,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "git",
 			zone:     pos,
 			priority: c.config.Widgets.Git.Priority,
-			content:  constrainWidgetWidth(c.renderGitWidget(width), width),
+			content: c.collapsibleWidget(clientID, "git", width, func() string {
+				return constrainWidgetWidth(c.renderGitWidget(width), width)
+			}),
 		})
 	}
 
@@ -15974,7 +16107,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "session",
 			zone:     pos,
 			priority: c.config.Widgets.Session.Priority,
-			content:  constrainWidgetWidth(c.renderSessionWidget(width), width),
+			content: c.collapsibleWidget(clientID, "session", width, func() string {
+				return constrainWidgetWidth(c.renderSessionWidget(width), width)
+			}),
 		})
 	}
 
@@ -15988,7 +16123,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "claude",
 			zone:     pos,
 			priority: c.config.Widgets.Claude.Priority,
-			content:  constrainWidgetWidth(c.renderClaudeWidget(width), width),
+			content: c.collapsibleWidget(clientID, "claude", width, func() string {
+				return constrainWidgetWidth(c.renderClaudeWidget(width), width)
+			}),
 		})
 	}
 
@@ -16002,7 +16139,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "teamclaude",
 			zone:     pos,
 			priority: c.config.Widgets.TeamClaude.Priority,
-			content:  constrainWidgetWidth(c.renderTeamClaudeWidget(clientID, width), width),
+			content: c.collapsibleWidget(clientID, "teamclaude", width, func() string {
+				return constrainWidgetWidth(c.renderTeamClaudeWidget(clientID, width), width)
+			}),
 		})
 	}
 
@@ -16016,7 +16155,9 @@ func (c *Coordinator) collectWidgetEntries(clientID string, width int, skipPet, 
 			name:     "kimi",
 			zone:     pos,
 			priority: c.config.Widgets.Kimi.Priority,
-			content:  constrainWidgetWidth(c.renderKimiWidget(clientID, width), width),
+			content: c.collapsibleWidget(clientID, "kimi", width, func() string {
+				return constrainWidgetWidth(c.renderKimiWidget(clientID, width), width)
+			}),
 		})
 	}
 
@@ -16275,24 +16416,38 @@ func (c *Coordinator) renderClockWidget(clientID string, width int) string {
 		result.WriteString("\n")
 	}
 
-	timeStr := now.Format(timeFormat)
-	timePadding := (width - lipgloss.Width(timeStr)) / 2
-	if timePadding < 0 {
-		timePadding = 0
+	dateFormat := clock.DateFmt
+	if dateFormat == "" {
+		dateFormat = "Mon Jan 2"
 	}
-	result.WriteString(paintOn(strings.Repeat(" ", timePadding)+timeStr, fgColor, bgColor) + "\n")
 
-	if clock.ShowDate {
-		dateFormat := clock.DateFmt
-		if dateFormat == "" {
-			dateFormat = "Mon Jan 2"
+	centerRow := func(text string) string {
+		pad := (width - lipgloss.Width(text)) / 2
+		if pad < 0 {
+			pad = 0
 		}
-		dateStr := now.Format(dateFormat)
-		datePadding := (width - lipgloss.Width(dateStr)) / 2
-		if datePadding < 0 {
-			datePadding = 0
+		return paintOn(strings.Repeat(" ", pad)+text, fgColor, bgColor) + "\n"
+	}
+
+	timeStr := now.Format(timeFormat)
+
+	if clock.ShowDate && clock.SingleLine {
+		sep := clock.Separator
+		if sep == "" {
+			sep = "  "
 		}
-		result.WriteString(paintOn(strings.Repeat(" ", datePadding)+dateStr, fgColor, bgColor) + "\n")
+		// A narrow sidebar can't fit both halves; fall back to the time alone
+		// rather than letting the row wrap and eat a second line anyway.
+		combined := timeStr + sep + now.Format(dateFormat)
+		if lipgloss.Width(combined) > width {
+			combined = timeStr
+		}
+		result.WriteString(centerRow(combined))
+	} else {
+		result.WriteString(centerRow(timeStr))
+		if clock.ShowDate {
+			result.WriteString(centerRow(now.Format(dateFormat)))
+		}
 	}
 
 	for i := 0; i < clock.PaddingBot; i++ {
@@ -19384,6 +19539,19 @@ func (c *Coordinator) handleSemanticAction(clientID string, input *daemon.InputP
 		go c.saveCollapsedGroups()
 		return false // No tmux window state change
 
+	case "toggle_widget":
+		c.stateMu.Lock()
+		name := input.ResolvedTarget
+		if c.collapsedWidgets[name] {
+			delete(c.collapsedWidgets, name)
+		} else {
+			c.collapsedWidgets[name] = true
+		}
+		c.stateMu.Unlock()
+		// Save async - don't block render on the tmux round-trip
+		go c.saveCollapsedWidgets()
+		return true // repaint now; the widget zone just changed height
+
 	case "open_degraded":
 		// Click on the TeamClaude widget's warning icon -> open the
 		// degraded-models popup.
@@ -22454,20 +22622,10 @@ func (c *Coordinator) showGroupContextMenu(clientID string, groupName string, po
 }
 
 // createNewWindowDefault creates a plain new window (the sidebar "+", prefix-c,
-// M-n). The new tab opens in the CURRENT pane's directory and is born into the
-// group that DIRECTORY maps to — so a "+" from a tab in ~/git/studiodome lands in
-// the same group as its sibling, because they share a dir. Deriving the group up
-// front (rather than letting the window pop into Default and get re-filed on the
-// next refresh) matters for focus: Default sorts first, so a transient stop there
-// yanks the new tab — and the user's focus — to the top of the sidebar.
-//
-// Group resolution: (1) the configured group whose working_dir contains the
-// starting dir (presetGroupForCWD, most-specific wins); (2) else the current
-// tab's own group, so a same-dir tab still sits with its sibling even when the
-// dir maps to no configured working_dir — but only for a LOCAL current tab, since
-// a remote tab's group reflects an ssh host, not this new local dir; (3) else
-// Default. A group's dedicated "+" is a different path (createNewWindowWithOverrides
-// with an explicit group).
+// M-n). The new window is created in the same group the user is in (or Default),
+// with the same color as the current window (unless the directory has another
+// color from remembered appearance or configured working_dir), and appears below
+// the user's current window in the tab bar.
 //
 // Delegates to the bin/new-window binary for atomic creation: the sidebar
 // renderer is spawned BEFORE the user sees the window, eliminating the
@@ -22480,6 +22638,11 @@ func (c *Coordinator) createNewWindowDefault(clientID string) {
 	activeID := ""
 	if strings.HasPrefix(clientID, "window-header:") {
 		activeID = strings.TrimSpace(strings.TrimPrefix(clientID, "window-header:"))
+	} else if strings.HasPrefix(clientID, "sidebar:") {
+		activeID = strings.TrimSpace(strings.TrimPrefix(clientID, "sidebar:"))
+	}
+	if i := strings.IndexByte(activeID, '#'); i >= 0 {
+		activeID = activeID[:i]
 	}
 	if activeID == "" {
 		activeID = c.ActiveWindowID()
@@ -22513,28 +22676,33 @@ func (c *Coordinator) createNewWindowDefault(clientID string) {
 		}
 	}
 	inheritSSH := c.config == nil || c.config.Sidebar.NewTabInheritSSH == nil || *c.config.Sidebar.NewTabInheritSSH
-	group := c.presetGroupForCWD(cwd) // dir-driven (config read is safe under RLock)
 	c.stateMu.RUnlock()
 
-	// A new tab opened from an ssh/mosh session re-runs that connection so it
-	// lands on the SAME host. Give it its parent's group/color/icon up front so
-	// it's born in the right place instead of flickering through the local launch
-	// dir's identity until the daemon detects the ssh and
-	// restoreAppearanceOnTransition repaints it. When re-run is off it falls
-	// through to the local dir-driven grouping below.
-	//
-	// remoteCmd is resolved here (external ps/pgrep I/O, so after RUnlock) for the
-	// legacy fallback path; the bin/new-window spawner self-detects from the
-	// firing pane, so it doesn't need it passed in.
-	// The dir-driven group always wins when the cwd resolves one: inheriting over
-	// it hands the parent's identity to a tab that already knows its own, which
-	// then latches permanently via @tabby_color_seeded.
-	color, icon, remoteCmd := "", "", ""
-	if curRemote && inheritSSH {
-		if group == "" {
-			group = curGroup
+	group := curGroup
+	if group == "" {
+		group = "Default"
+	}
+
+	effectiveCurrentColor := curColor
+	if effectiveCurrentColor == "" && c.config != nil {
+		for _, g := range c.config.Groups {
+			if g.Name == group && strings.TrimSpace(g.Theme.Bg) != "" {
+				effectiveCurrentColor = strings.TrimSpace(g.Theme.Bg)
+				break
+			}
 		}
+	}
+
+	dirColor := c.resolveDirColor(cwd)
+	color := ""
+	if dirColor != "" && !strings.EqualFold(dirColor, effectiveCurrentColor) {
+		color = dirColor
+	} else if curColor != "" {
 		color = curColor
+	}
+
+	icon, remoteCmd := "", ""
+	if curRemote && inheritSSH {
 		icon = curIcon
 		if activePanePID > 0 {
 			remoteCmd = tmux.RemoteCommandForPane(activePanePID)
@@ -22598,61 +22766,74 @@ func (c *Coordinator) createNewWindowWithOverrides(clientID, currentGroup, worki
 	// avoid yanking other attached clients on every multi-client elector
 	// flip (which produced the "+ then cycles other windows" bug).
 	firingTTY := ""
+	sourceWindowID := ""
 	if strings.HasPrefix(clientID, "window-header:") {
-		sourceWindowID := strings.TrimSpace(strings.TrimPrefix(clientID, "window-header:"))
+		sourceWindowID = strings.TrimSpace(strings.TrimPrefix(clientID, "window-header:"))
+	} else if strings.HasPrefix(clientID, "sidebar:") {
+		sourceWindowID = strings.TrimSpace(strings.TrimPrefix(clientID, "sidebar:"))
+	}
+	if i := strings.IndexByte(sourceWindowID, '#'); i >= 0 {
+		sourceWindowID = sourceWindowID[:i]
+	}
+	if sourceWindowID == "" {
+		sourceWindowID = c.ActiveWindowID()
+	}
+	if sourceWindowID != "" {
 		firingTTY = strings.TrimSpace(clientTTYForWindow(sourceWindowID))
 	}
 
 	c.SetNewWindowInFlight(currentGroup, workingDir, firingTTY)
 
-	// Find the new-window binary (sibling of this daemon binary)
-	newWindowBin := ""
-	if exe, err := os.Executable(); err == nil {
-		newWindowBin = filepath.Join(filepath.Dir(exe), "new-window")
+	args := []string{"-session", c.sessionID, "-print-id"}
+	if firingTTY != "" {
+		args = append(args, "-client-tty", firingTTY)
+	}
+	if sourceWindowID != "" {
+		args = append(args, "-after", sourceWindowID)
+	}
+	if currentGroup != "" {
+		args = append(args, "-group", currentGroup)
+	}
+	if workingDir != "" {
+		args = append(args, "-path", workingDir)
+	}
+	if color != "" {
+		args = append(args, "-color", color)
+	}
+	if icon != "" {
+		args = append(args, "-icon", icon)
+	}
+	if c.sidebarHidden {
+		args = append(args, "-no-sidebar")
 	}
 
-	if newWindowBin != "" {
-		if _, err := os.Stat(newWindowBin); err == nil {
-			args := []string{"-session", c.sessionID}
-			sourceWindowID := ""
-			if strings.HasPrefix(clientID, "window-header:") {
-				sourceWindowID = strings.TrimSpace(strings.TrimPrefix(clientID, "window-header:"))
-			}
-			if sourceTTY := strings.TrimSpace(clientTTYForWindow(sourceWindowID)); sourceTTY != "" {
-				args = append(args, "-client-tty", sourceTTY)
-			}
-			if currentGroup != "" {
-				args = append(args, "-group", currentGroup)
-			}
-			if workingDir != "" {
-				args = append(args, "-path", workingDir)
-			}
-			if color != "" {
-				args = append(args, "-color", color)
-			}
-			if icon != "" {
-				args = append(args, "-icon", icon)
-			}
-			if c.sidebarHidden {
-				args = append(args, "-no-sidebar")
-			}
-			logEvent("NEW_WINDOW_BINARY bin=%s session=%s group=%s", newWindowBin, c.sessionID, currentGroup)
-			out, err := exec.Command(newWindowBin, args...).CombinedOutput()
-			if err != nil {
-				logEvent("NEW_WINDOW_BINARY_ERR err=%v (falling back to legacy)", err)
+	var cmd *exec.Cmd
+	newWindowBin := ""
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "new-window")
+		if _, err := os.Stat(candidate); err == nil {
+			newWindowBin = candidate
+			cmd = exec.Command(newWindowBin, args...)
+		} else {
+			newWindowBin = exe
+			cmd = exec.Command(exe, append([]string{"new-window"}, args...)...)
+		}
+	}
+
+	if cmd != nil {
+		logEvent("NEW_WINDOW_BINARY bin=%s session=%s group=%s", newWindowBin, c.sessionID, currentGroup)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			logEvent("NEW_WINDOW_BINARY_ERR err=%v (falling back to legacy)", err)
+			c.ClearNewWindowStatus()
+		} else {
+			newID := firstToken(strings.TrimSpace(string(out)), "@")
+			if newID == "" {
+				logEvent("NEW_WINDOW_BINARY_ERR err=empty_window_id (falling back to legacy)")
 				c.ClearNewWindowStatus()
-				// Fall through to legacy path below
-				newWindowBin = ""
 			} else {
-				newID := strings.TrimSpace(string(out))
-				if newID == "" {
-					logEvent("NEW_WINDOW_BINARY_ERR err=empty_window_id (falling back to legacy)")
-					c.ClearNewWindowStatus()
-					newWindowBin = ""
-				} else {
-					c.SetNewWindowReady(newID)
-					return
-				}
+				c.SetNewWindowReady(newID)
+				return
 			}
 		}
 	}
@@ -22660,25 +22841,26 @@ func (c *Coordinator) createNewWindowWithOverrides(clientID, currentGroup, worki
 	// Legacy fallback: create window (focused), assign group, let hook chain handle renderer.
 	// Used when bin/new-window is not built (e.g. fresh clone without install.sh).
 	logEvent("NEW_WINDOW_LEGACY session=%s group=%s", c.sessionID, currentGroup)
-	// The ssh/mosh re-run is send-keys'd into the new tab's interactive shell
-	// below, NOT passed as new-window's shell-command: a "cmd; exec $SHELL" wrapper
-	// runs ssh under a non-interactive shell with no foreground process group of
-	// its own, so tmux reports pane_current_command as the wrapper shell and the
-	// remote detection (which drives the ssh icon/host color) never fires.
-	args := []string{"new-window", "-P", "-F", "#{window_id}", "-t", c.sessionID + ":"}
+	argsTmux := []string{"new-window", "-P", "-F", "#{window_id}"}
+	if sourceWindowID != "" {
+		argsTmux = append(argsTmux, "-a", "-t", sourceWindowID)
+	} else {
+		argsTmux = append(argsTmux, "-t", c.sessionID+":")
+	}
 	if workingDir != "" {
-		args = append(args, "-c", workingDir)
+		argsTmux = append(argsTmux, "-c", workingDir)
 	}
 
-	out, err := tmuxCmd(args...).CombinedOutput()
-	newWindowIDLegacy := strings.TrimSpace(string(out))
+	out, err := tmuxCmd(argsTmux...).CombinedOutput()
+	newWindowIDLegacy := firstToken(strings.TrimSpace(string(out)), "@")
 	logEvent("NEW_WINDOW_LEGACY_RESULT id=%s err=%v", newWindowIDLegacy, err)
 
-	if newWindowIDLegacy != "" && currentGroup != "" && currentGroup != "Default" {
+	if newWindowIDLegacy != "" && currentGroup != "" {
 		tmuxCmd("set-window-option", "-t", newWindowIDLegacy, "@tabby_group", currentGroup).Run()
 	}
 	if newWindowIDLegacy != "" && color != "" {
 		tmuxCmd("set-window-option", "-t", newWindowIDLegacy, "@tabby_color", color).Run()
+		tmuxCmd("set-window-option", "-t", newWindowIDLegacy, "@tabby_color_seeded", "1").Run()
 	}
 	if newWindowIDLegacy != "" && icon != "" {
 		tmuxCmd("set-window-option", "-t", newWindowIDLegacy, "@tabby_icon", icon).Run()
