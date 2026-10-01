@@ -280,6 +280,16 @@ func Run(allArgs []string) (code int) {
 		fatal("Unknown action: " + action)
 	}
 
+	// The group context-menu commands wrap their arguments as \"name\" inside
+	// a single-quoted run-shell. tmux 3.6 hands that to the shell with the
+	// backslashes intact, so the shell sees \"Default\" and we receive the
+	// quote characters as part of the name; the daemon then finds no such
+	// group and silently drops the change (and Remove Marker would set the
+	// marker to a literal ""). Strip one layer of surrounding quotes so the
+	// same command works whichever way the running tmux parses it.
+	target = stripSurroundingQuotes(target)
+	value = stripSurroundingQuotes(value)
+
 	daemonAction := strings.ReplaceAll(action, "-", "_")
 	if daemonAction == "exit_if_no_main" {
 		daemonAction = "exit_if_no_main_windows"
@@ -1122,4 +1132,13 @@ type fatalPanic struct{ msg string }
 
 func fatal(msg string) {
 	panic(fatalPanic{msg})
+}
+
+// stripSurroundingQuotes removes one pair of matching double quotes wrapping
+// s, leaving anything else (including a lone quote) untouched.
+func stripSurroundingQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
