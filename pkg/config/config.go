@@ -521,7 +521,7 @@ type Sidebar struct {
 	NewGroupButton       bool             `yaml:"new_group_button"`
 	ResizeButtons        *bool            `yaml:"resize_buttons,omitempty"` // Show the < > resize buttons pinned at the sidebar bottom (default: true)
 	NavButtons           *bool            `yaml:"nav_buttons,omitempty"`    // Show the ▲ ▼ prev/next window buttons pinned at the sidebar bottom (default: true)
-	ShowEmptyGroups      bool             `yaml:"show_empty_groups"`
+	ShowEmptyGroups      *bool            `yaml:"show_empty_groups,omitempty"` // Show configured groups with no windows (default: true, so a just-created group is visible to move windows into)
 	SortBy               string           `yaml:"sort_by"`
 	Debug                bool             `yaml:"debug"`                  // Enable debug logging to /tmp/tabby-debug.log
 	LineHeight           int              `yaml:"line_height"`            // Extra blank lines between items (0=compact, 1+=spaced)
@@ -643,4 +643,10 @@ type Indicator struct {
 
 func DefaultConfigPath() string {
 	return paths.ConfigPath()
+}
+
+// ShowsEmptyGroups returns whether groups with no windows are listed; true
+// when the key is absent, matching the documented default.
+func (s Sidebar) ShowsEmptyGroups() bool {
+	return s.ShowEmptyGroups == nil || *s.ShowEmptyGroups
 }

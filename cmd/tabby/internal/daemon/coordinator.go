@@ -5375,7 +5375,7 @@ func (c *Coordinator) applyRefreshSnapshot(snap *refreshSnapshot) {
 	aiToolOps := c.processAIToolStates(preloadedProcessTree)
 	rwAITools := time.Now()
 
-	c.grouped = grouping.GroupWindowsWithOptions(windows, c.config.Groups, c.config.Sidebar.ShowEmptyGroups)
+	c.grouped = grouping.GroupWindowsWithOptions(windows, c.config.Groups, c.config.Sidebar.ShowsEmptyGroups())
 	c.computeVisualPositions()
 	pendingMoves := c.syncWindowIndices()
 
@@ -5529,7 +5529,7 @@ func (c *Coordinator) SetActiveWindowOptimistic(windowID string) {
 		c.windows[i].Active = (c.windows[i].ID == windowID)
 	}
 	// Re-group so generateSidebarHeader picks up the new active window's colors
-	c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowEmptyGroups)
+	c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowsEmptyGroups())
 	c.computeVisualPositions()
 }
 
@@ -14500,7 +14500,7 @@ func (c *Coordinator) dashboardRenderGroups() []grouping.GroupedWindows {
 		snap := c.dashboardOrigins[id]
 		synth = append(synth, tmux.Window{ID: id, Name: snap.Name, Group: snap.Group, Index: snap.Index})
 	}
-	return grouping.GroupWindowsWithOptions(synth, c.config.Groups, c.config.Sidebar.ShowEmptyGroups)
+	return grouping.GroupWindowsWithOptions(synth, c.config.Groups, c.config.Sidebar.ShowsEmptyGroups())
 }
 
 // sidebarRenderGroups returns the group list for the sidebar tab area with every
@@ -22000,7 +22000,7 @@ func (c *Coordinator) setGroupMarkerExact(groupName, marker string) bool {
 	c.config = cfg
 	applyContrastConfig(cfg)
 	c.widgetZoneHeights.Clear()
-	c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowEmptyGroups)
+	c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowsEmptyGroups())
 	c.stateMu.Unlock()
 	return true
 }
@@ -23114,7 +23114,7 @@ func (c *Coordinator) handleKeyInput(clientID string, input *daemon.InputPayload
 			c.config = cfg
 			applyContrastConfig(cfg)
 			c.widgetZoneHeights.Clear()
-			c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowEmptyGroups)
+			c.grouped = grouping.GroupWindowsWithOptions(c.windows, c.config.Groups, c.config.Sidebar.ShowsEmptyGroups())
 			c.computeVisualPositions()
 			moves := c.syncWindowIndices()
 			c.stateMu.Unlock()
