@@ -6853,7 +6853,7 @@ func (c *Coordinator) buildPaneHeaderColorArgs() [][]string {
 				add("set-window-option", "-t", winTarget, "@tabby_prompt_icon", effectiveIcon)
 			}
 
-			if autoBorder || borderFromTab {
+			if (autoBorder || borderFromTab) && isHexColor(tabBg) {
 				// Border fg = tab's text color, border bg = tab's bg color
 				bFg := baseFg
 				bBg := tabBg
@@ -6893,6 +6893,13 @@ func (c *Coordinator) buildPaneHeaderColorArgs() [][]string {
 					inactiveStyle = fmt.Sprintf("fg=%s,bg=%s", bFg, bBg)
 				}
 				add("set-window-option", "-t", winTarget, "pane-border-style", inactiveStyle)
+			} else {
+				// Fork: the painter owns these two options. A tab that lost its
+				// colour (group set to Transparent, window moved out of a
+				// coloured group) used to keep the border it was painted with
+				// until the daemon restarted. Unsetting is a no-op when unset.
+				add("set-window-option", "-t", winTarget, "-u", "pane-active-border-style")
+				add("set-window-option", "-t", winTarget, "-u", "pane-border-style")
 			}
 
 			if autoBorder {
@@ -6928,6 +6935,20 @@ func (c *Coordinator) buildPaneHeaderColorArgs() [][]string {
 		}
 	}
 	return batches
+}
+
+// isHexColor reports whether s is a #rrggbb colour (the only form tmux border
+// styling is given; "transparent", "default" and "" all mean "no colour").
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // flattenTmuxBatches joins per-window argv batches into a single tmux argv,
@@ -12655,6 +12676,20 @@ func (c *Coordinator) RenderForClient(clientID string, width, height int) *daemo
 		} else {
 			mainContent += strings.Repeat("\n", pad)
 		}
+		// Fork: the padding is clickable (right-click: New window / New
+		// group), whether it sits at the end or in front of a floated
+		// Minimized section.
+		blankStart := mainLines
+		if floatLine >= 0 && floatLine <= mainLines {
+			blankStart = floatLine
+		}
+		mainRegions = append(mainRegions, daemon.ClickableRegion{
+			StartLine: blankStart,
+			EndLine:   blankStart + pad - 1,
+			StartCol:  0,
+			EndCol:    0,
+			Action:    "sidebar_blank",
+		})
 		mainLines = maxMainLines
 	}
 
@@ -19610,6 +19645,25 @@ func (c *Coordinator) handleSemanticAction(clientID string, input *daemon.InputP
 		tmuxCmd("select-pane", "-t", paneID).Run()
 		return true
 
+	case "group_header":
+		// Fork: the header row itself is clickable. With windows it folds
+		// like the disclosure icon; empty, it opens the group menu, which is
+		// the only way to rename/recolour/delete a group nothing lives in.
+		c.stateMu.RLock()
+		hasWindows := false
+		for i := range c.grouped {
+			if c.grouped[i].Name == input.ResolvedTarget {
+				hasWindows = len(c.grouped[i].Windows) > 0
+				break
+			}
+		}
+		c.stateMu.RUnlock()
+		if !hasWindows {
+			pos := menuPosition{PaneID: input.PaneID, X: input.MouseX, Y: input.MouseY}
+			c.showGroupContextMenu(clientID, input.ResolvedTarget, pos)
+			return true
+		}
+		fallthrough
 	case "toggle_group":
 		c.stateMu.Lock()
 		groupName := input.ResolvedTarget
@@ -20728,6 +20782,12 @@ func (c *Coordinator) handleSemanticAction(clientID string, input *daemon.InputP
 		// Hamburger menu on group header -> show group context menu
 		pos := menuPosition{PaneID: input.PaneID, X: input.MouseX, Y: input.MouseY}
 		c.showGroupContextMenu(clientID, input.ResolvedTarget, pos)
+		return true
+
+	case "sidebar_blank":
+		// Fork: the empty space under the list, like a browser's tab strip.
+		pos := menuPosition{PaneID: input.PaneID, X: input.MouseX, Y: input.MouseY}
+		c.showSidebarBlankMenu(clientID, pos)
 		return true
 
 	case "window_menu":
@@ -22119,12 +22179,27 @@ func (c *Coordinator) handleRightClick(clientID string, input *daemon.InputPaylo
 		c.showGroupContextMenu(clientID, input.ResolvedTarget, pos)
 	case "sidebar_header_area", "sidebar_settings":
 		c.showSidebarSettingsMenu(clientID, pos)
+	case "sidebar_blank":
+		c.showSidebarBlankMenu(clientID, pos)
 	case "header_context", "header_split_v", "header_split_h", "header_close", "header_select_pane":
 		// Right-click on pane header -> show pane context menu
 		c.showPaneContextMenu(clientID, input.ResolvedTarget, pos)
 	default:
 		coordinatorDebugLog.Printf("handleRightClick: unhandled action=%q target=%q", input.ResolvedAction, input.ResolvedTarget)
 	}
+}
+
+// showSidebarBlankMenu is the menu for the empty area below the window list:
+// the two things a browser's tab strip offers there.
+func (c *Coordinator) showSidebarBlankMenu(clientID string, pos menuPosition) {
+	hookPath := c.getHookPath()
+	args := append([]string{"display-menu", "-T", " Sidebar "}, pos.args()...)
+	args = append(args, "New window", "n", fmt.Sprintf("run-shell -b '%s new-tab'", hookPath))
+	args = append(args, "New group...", "g", newGroupMenuCommand(hookPath, ""))
+	args = append(args, "", "", "")
+	args = append(args, "Sidebar settings...", "s", fmt.Sprintf("run-shell -b '%s sidebar-settings'", hookPath))
+	_ = clientID
+	tmuxCmd(args...).Run()
 }
 
 // showWindowContextMenu displays the context menu for a window

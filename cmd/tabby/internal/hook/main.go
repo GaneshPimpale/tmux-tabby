@@ -266,6 +266,10 @@ func Run(allArgs []string) (code int) {
 		navID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 		value = "invoking=" + invokingTTY + ";most_active=" + mostActiveTTY + ";navid=" + navID
 
+	case "new-tab", "sidebar-settings":
+		// Fork: fired from the blank-area sidebar menu. No target; the daemon
+		// resolves the active window itself.
+
 	case "toggle-minimize-window":
 		// Default to current active pane; daemon resolves its window.
 		target = currentPaneID()
