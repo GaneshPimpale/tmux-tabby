@@ -179,6 +179,7 @@ type Loop struct {
 	// lastStaleClientPrune rate-limits PruneStaleClients; the geometry tick
 	// itself runs far too often to scan clients on every pass.
 	lastStaleClientPrune time.Time
+	lastLabelSig    string // paneLabelSignature from the previous window check
 	lastWindowCheck      string
 	lastSlowFrame        int
 	displayedWins        []string  // windows some attached client is looking at
@@ -914,6 +915,35 @@ func (l *Loop) doPaneLayoutOps() {
 
 // handleWindowCheckTick is the migrated body of the windowCheckTicker case in
 // the daemon main select loop.
+// paneLabelSignature is the part of tmux state the tab labels depend on, as
+// one comparable string: per content pane its window, directory and current
+// command. Chrome panes are skipped so a renderer respawn doesn't count.
+func paneLabelSignature(sessionID string) string {
+	args := []string{"list-panes", "-s"}
+	if sessionID != "" {
+		args = append(args, "-t", sessionID)
+	}
+	args = append(args, "-F", "#{window_id}|#{pane_id}|#{pane_current_path}|#{pane_current_command}|#{pane_start_command}")
+	out, err := tmuxCmd(args...).Output()
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 || paneIsSystemPane(parts[3], parts[4]) {
+			continue
+		}
+		b.WriteString(parts[0])
+		b.WriteByte('|')
+		b.WriteString(parts[2])
+		b.WriteByte('|')
+		b.WriteString(parts[3])
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func (l *Loop) handleWindowCheckTick() {
 	l.flags.window.Store(false)
 	// Window check is a polling task — stalls are non-fatal (skip and retry next tick)
@@ -933,6 +963,19 @@ func (l *Loop) handleWindowCheckTick() {
 			spawnRenderersForNewWindows(l.server, l.deps.SessionID, windows, l.coord)
 			cleanupOrphanedSidebars(windows, l.coord)
 			cleanupOrphanWindowsByTmux(l.deps.SessionID, l.coord)
+		}
+		// Fork: tab labels are built from each pane's directory and program,
+		// and nothing in tmux fires when either changes (a `cd`, launching
+		// htop). The full refresh tick is 30s, which read as "the name never
+		// updates". One list-panes here (~10ms) and a string compare catch it
+		// on this 3s tick and queue a refresh only when something moved.
+		if sig := paneLabelSignature(l.deps.SessionID); sig != "" && sig != l.lastLabelSig {
+			changed := l.lastLabelSig != ""
+			l.lastLabelSig = sig
+			if changed {
+				logEvent("LABEL_SOURCE_CHANGED trigger=window_check")
+				l.SubmitRefresh()
+			}
 		}
 		// Width sync as fallback for missed events, only when active context changed
 		activeTTY := ""

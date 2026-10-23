@@ -1077,6 +1077,7 @@ type Coordinator struct {
 	// Housekeeping throttles (fork): these passes are no-ops in the steady
 	// state but each cost several tmux round-trips per tick.
 	lastDimClear       time.Time // applyPaneDimming with dim+tint off
+	lastBlankMenuPos   menuPosition // where the blank-area menu was last opened
 	lastStatusEnforced time.Time // EnforceStatusExclusivity
 	configCacheMu    sync.Mutex
 	configCacheMtime time.Time
@@ -20135,8 +20136,14 @@ func (c *Coordinator) handleSemanticAction(clientID string, input *daemon.InputP
 		return true
 
 	case "sidebar_settings":
-		// Show sidebar settings context menu
-		c.showSidebarSettingsMenu(clientID, menuPosition{PaneID: input.PaneID, X: input.MouseX, Y: input.MouseY})
+		// Show sidebar settings context menu. Reached from the blank-area
+		// menu via the hook binary, which carries no pane or mouse position;
+		// reuse where that menu was opened so tmux has somewhere to draw.
+		pos := menuPosition{PaneID: input.PaneID, X: input.MouseX, Y: input.MouseY}
+		if pos.PaneID == "" {
+			pos = c.lastBlankMenuPos
+		}
+		c.showSidebarSettingsMenu(clientID, pos)
 		return false
 
 	case "header_split_v":
@@ -22192,6 +22199,7 @@ func (c *Coordinator) handleRightClick(clientID string, input *daemon.InputPaylo
 // showSidebarBlankMenu is the menu for the empty area below the window list:
 // the two things a browser's tab strip offers there.
 func (c *Coordinator) showSidebarBlankMenu(clientID string, pos menuPosition) {
+	c.lastBlankMenuPos = pos
 	hookPath := c.getHookPath()
 	args := append([]string{"display-menu", "-T", " Sidebar "}, pos.args()...)
 	args = append(args, "New window", "n", fmt.Sprintf("run-shell -b '%s new-tab'", hookPath))
