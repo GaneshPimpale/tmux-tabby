@@ -22228,7 +22228,8 @@ func (c *Coordinator) showWindowContextMenu(clientID string, windowTarget string
 	// Rename option - hard-locks the name (@tabby_name_locked) so syncWindowNames
 	// and the live summary won't overwrite it. The lock lives on the window for
 	// its lifetime; it is not persisted by directory.
-	renameCmd := fmt.Sprintf("command-prompt -I '%s' \"rename-window -t %s -- '%%%%' ; set-window-option -t %s @tabby_name_locked 1\"", win.Name, wid, wid)
+	// The trailing signal makes the sidebar pick the new name up at once.
+	renameCmd := fmt.Sprintf("command-prompt -I '%s' \"rename-window -t %s -- '%%%%' ; set-window-option -t %s @tabby_name_locked 1 ; run-shell -b '%s'\"", win.Name, wid, wid, c.getScriptPath("signal-daemon.sh"))
 	args = append(args, "Rename", "r", renameCmd)
 
 	// Unlock name option - drops the per-window hard lock so the tab returns to

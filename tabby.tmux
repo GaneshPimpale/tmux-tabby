@@ -636,7 +636,9 @@ tmux bind-key , run-shell -b "$CURRENT_DIR/bin/tabby hook pane-menu '#{pane_id}'
 # hook because the daemon's own rename-window calls would trigger it, locking
 # the daemon out of future updates. We set @tabby_name_locked directly in each
 # user-facing rename path instead.
-tmux bind-key r command-prompt -I "#W" "rename-window '%%' ; set-window-option @tabby_name_locked 1"
+# Fork: nudge the daemon so the sidebar shows the new name at once instead
+# of on its next tick or click (no after-rename-window hook, see above).
+tmux bind-key r command-prompt -I "#W" "rename-window '%%' ; set-window-option @tabby_name_locked 1 ; run-shell -b '$CURRENT_DIR/scripts/signal-daemon.sh'"
 
 # Skip the daemon refresh when the active window is the dashboard. Pane-switches
 # inside the tiled dashboard grid don't change anything the sidebar depends on,
@@ -853,7 +855,7 @@ tmux bind-key '&' confirm-before -p 'Close window? (y/n)' "run-shell '$KILL_WIND
 # Mirror context-menu shortcuts at the prefix layer so menu keys double as
 # keyboard shortcuts (prefix+r rename, prefix+k kill window). Split shortcuts
 # (prefix+|, prefix+-) are already bound elsewhere in this file.
-tmux bind-key r command-prompt -I '#W' "rename-window '%%' ; set-window-option @tabby_name_locked 1"
+tmux bind-key r command-prompt -I '#W' "rename-window '%%' ; set-window-option @tabby_name_locked 1 ; run-shell -b '$CURRENT_DIR/scripts/signal-daemon.sh'"
 tmux bind-key k confirm-before -p 'Close window? (y/n)' "run-shell '$KILL_WINDOW_SCRIPT #{window_index}'"
 
 # Keyboard shortcuts follow tmux conventions (prefix-based)
