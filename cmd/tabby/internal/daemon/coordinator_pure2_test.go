@@ -293,16 +293,11 @@ func TestRenderStatusBar(t *testing.T) {
 
 func TestPaneIsSystemPane(t *testing.T) {
 	trueTests := [][2]string{
-		{"sidebar", ""},
-		{"sidebar-renderer", ""},
 		{"", "sidebar-renderer"},
-		{"tabby-daemon", ""},
-		{"pane-header", ""},
-		{"my-renderer", ""},
 		{"", "exec -a sidebar-renderer '/home/u/.tmux/plugins/tabby/bin/tabby' render sidebar"},
 		{"", "exec -a window-header '/home/u/bin/tabby' render window-header"},
-		{"tabby", ""},
 		{"", "/usr/local/bin/tabby watchdog -session $0"},
+		{"tabby", "/usr/local/bin/tabby render sidebar -window @1"},
 	}
 	for _, tt := range trueTests {
 		cmd, start := tt[0], tt[1]
@@ -324,6 +319,16 @@ func TestPaneIsSystemPane(t *testing.T) {
 		{"bash", "cat '/home/u/.tmux/resurrect/restore/pane_contents//pane-sidebar:2.0'; exec -l /bin/bash"},
 		{"bash", "cat '/home/u/.tmux/resurrect/restore/pane_contents//pane-renderer:2.0'; exec -l /bin/bash"},
 		{"nvim", "nvim /home/u/src/tabby_notes.md"},
+		// Fork: only the start command classifies. An interactive shell
+		// (empty start command) that is currently running the tabby CLI, or
+		// anything else named like chrome, is still the user's pane.
+		{"tabby", ""},
+		{"sidebar", ""},
+		{"sidebar-renderer", ""},
+		{"tabby-daemon", ""},
+		{"pane-header", ""},
+		{"my-renderer", ""},
+		{"tabby", "zsh"},
 	}
 	for _, tt := range falseTests {
 		cmd, start := tt[0], tt[1]

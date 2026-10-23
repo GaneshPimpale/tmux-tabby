@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/brendandebeasi/tabby/pkg/tmux"
@@ -36,4 +38,42 @@ func tmuxCmd(args ...string) *exec.Cmd {
 	// the context is bounded by its own timeout regardless.
 	_ = cancel
 	return cmd
+}
+
+// @tabby_spawning is a cross-process bracket (newwindow and the layout pass
+// raise it while panes are being created) that half a dozen housekeeping
+// passes consult before touching panes. Each consult was its own tmux
+// round-trip (~10ms on macOS) on every tick. Cache the answer briefly: one
+// read serves a whole housekeeping pass, and the daemon's own writes update
+// the cache directly.
+var (
+	spawningMu   sync.Mutex
+	spawningVal  bool
+	spawningAt   time.Time
+	spawningTTL  = 150 * time.Millisecond
+)
+
+// spawningActive reports whether the @tabby_spawning bracket is raised.
+func spawningActive() bool {
+	spawningMu.Lock()
+	defer spawningMu.Unlock()
+	if time.Since(spawningAt) < spawningTTL {
+		return spawningVal
+	}
+	out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output()
+	spawningVal = err == nil && strings.TrimSpace(string(out)) == "1"
+	spawningAt = time.Now()
+	return spawningVal
+}
+
+// setSpawning raises or lowers the bracket in tmux and in the cache.
+func setSpawning(on bool) {
+	v := "0"
+	if on {
+		v = "1"
+	}
+	spawningMu.Lock()
+	spawningVal, spawningAt = on, time.Now()
+	spawningMu.Unlock()
+	tmuxCmd("set-option", "-g", "@tabby_spawning", v).Run()
 }

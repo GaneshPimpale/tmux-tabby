@@ -137,12 +137,20 @@ install_from_source() {
 	log "building from source"
 	mkdir -p "$PLUGIN_DIR/bin"
 	local name
+	# Build beside the target, then rm + mv into place. `go build -o` onto the
+	# live binary rewrites it in place, and on macOS that invalidates the
+	# cached code signature of every running copy (the daemon, every sidebar
+	# renderer, the osc-handler pipes), which the kernel then SIGKILLs. Same
+	# reason install_prebuilt copies rather than overwrites.
 	for name in "$PLUGIN_DIR"/cmd/*/; do
 		name=$(basename "$name")
-		go build -o "$PLUGIN_DIR/bin/$name" "./cmd/$name" || {
+		go build -o "$PLUGIN_DIR/bin/.$name.new" "./cmd/$name" || {
 			echo "Failed to build $name"
+			rm -f "$PLUGIN_DIR/bin/.$name.new"
 			return 1
 		}
+		rm -f "$PLUGIN_DIR/bin/$name"
+		mv "$PLUGIN_DIR/bin/.$name.new" "$PLUGIN_DIR/bin/$name"
 	done
 	chmod +x "$PLUGIN_DIR/bin"/*
 	return 0

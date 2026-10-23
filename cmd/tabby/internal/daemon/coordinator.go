@@ -1074,6 +1074,10 @@ type Coordinator struct {
 	// loadConfig cache: skips re-reading + re-parsing config.yaml when the
 	// file's mtime hasn't moved. Steady-state RefreshWindows hits this every
 	// refresh; the user only edits the file occasionally.
+	// Housekeeping throttles (fork): these passes are no-ops in the steady
+	// state but each cost several tmux round-trips per tick.
+	lastDimClear       time.Time // applyPaneDimming with dim+tint off
+	lastStatusEnforced time.Time // EnforceStatusExclusivity
 	configCacheMu    sync.Mutex
 	configCacheMtime time.Time
 	configCachePath  string
@@ -2596,15 +2600,23 @@ func (c *Coordinator) ApplyPaneDimming(activeWindowID string) {
 // the active window to every window in the session.
 func (c *Coordinator) applyPaneDimming(activeWindowID string, allWindows bool) {
 	// Check spawning guard — during pane creation, data is stale
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 
 	cfg := c.GetConfig()
 	if cfg == nil {
 		return
+	}
+
+	// With dimming and tinting both off this pass only clears leftovers;
+	// once cleared there is nothing to do until the config changes, so run
+	// it rarely instead of on every tick (it is 3-4 round-trips otherwise).
+	if !allWindows && !cfg.PaneHeader.DimInactive && !cfg.PaneHeader.Tint {
+		if time.Since(c.lastDimClear) < 10*time.Second {
+			return
+		}
+		c.lastDimClear = time.Now()
 	}
 
 	panes := listDimPanes(activeWindowID)
@@ -2979,11 +2991,16 @@ func (c *Coordinator) ApplyNewWindowGroup() {
 // is active and on when the sidebar is disabled. Replaces
 // scripts/enforce_status_exclusivity.sh.
 func (c *Coordinator) EnforceStatusExclusivity(sessionID string) {
+	// Fork: the sidebar/status decision only changes when tabby is toggled,
+	// and the toggle path sets `status` itself; re-checking every tick was
+	// three round-trips for nothing.
+	if time.Since(c.lastStatusEnforced) < 2*time.Second {
+		return
+	}
+	c.lastStatusEnforced = time.Now()
 	// Check spawning guard
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 
 	// Read sidebar mode from tmux option
@@ -3056,10 +3073,8 @@ func (c *Coordinator) EnforceStatusExclusivity(sessionID string) {
 // Called from signal_refresh when activeWindowID changes.
 func (c *Coordinator) HandleWindowSelect(activeWindowID string) {
 	// Check spawning guard
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 
 	// Clear the AI "done working" bell for the window being selected — the
@@ -3221,10 +3236,8 @@ func (c *Coordinator) selectWindowScoped(targetWindowID, reason, source, srcWind
 // Skips during @tabby_spawning to avoid saving stale mid-creation layouts.
 func (c *Coordinator) SaveWindowLayouts() {
 	// Check spawning guard
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 
 	c.stateMu.RLock()
@@ -20514,42 +20527,40 @@ func (c *Coordinator) handleSemanticAction(clientID string, input *daemon.InputP
 		if sessID == "" {
 			return false
 		}
-		panesOut, err := tmuxCmd("list-panes", "-a", "-t", sessID, "-F",
-			"#{pane_current_command}|#{pane_start_command}|#{pane_dead}").Output()
-		// A failed or empty listing must never read as "no main pane": a
-		// transient tmux error mid structural churn would otherwise
-		// kill-session a healthy session (observed live: infras-24 destroyed
-		// under a window create/kill burst, detaching its client).
-		if err != nil || strings.TrimSpace(string(panesOut)) == "" {
+		// Fork: this is the one place the daemon can end the whole session,
+		// so it is held to the strictest reading. A pane counts as "main"
+		// unless its START command names tabby chrome (paneIsSystemPane) —
+		// a shell that happens to be running the tabby CLI is still a
+		// shell. And the empty verdict must hold across two listings a
+		// moment apart, so a window mid-recreate can't read as empty.
+		sessionHasMain := func() (bool, bool) {
+			panesOut, err := tmuxCmd("list-panes", "-a", "-t", sessID, "-F",
+				"#{pane_current_command}|||#{pane_start_command}|||#{pane_dead}").Output()
+			// A failed or empty listing must never read as "no main pane".
+			if err != nil || strings.TrimSpace(string(panesOut)) == "" {
+				return true, false
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
+				parts := strings.SplitN(line, "|||", 3)
+				if len(parts) != 3 || parts[2] == "1" {
+					continue
+				}
+				if !paneIsSystemPane(parts[0], parts[1]) {
+					return true, true
+				}
+			}
+			return false, true
+		}
+		if hasMain, ok := sessionHasMain(); hasMain || !ok {
 			return false
 		}
-		hasMain := false
-		for _, line := range strings.Split(strings.TrimSpace(string(panesOut)), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "|", 3)
-			if len(parts) != 3 {
-				continue
-			}
-			cmd, startCmd, dead := parts[0], parts[1], parts[2]
-			if dead == "1" {
-				continue
-			}
-			combined := cmd + "|" + startCmd
-			if !strings.Contains(combined, "sidebar") &&
-				!strings.Contains(combined, "renderer") &&
-				!strings.Contains(combined, "pane-header") &&
-				!strings.Contains(combined, "tabby-daemon") {
-				hasMain = true
-				break
-			}
+		time.Sleep(400 * time.Millisecond)
+		if hasMain, ok := sessionHasMain(); hasMain || !ok {
+			return false
 		}
-		if !hasMain {
-			tmuxCmd("kill-session", "-t", sessID).Run()
-			return true
-		}
-		return false
+		logEvent("EXIT_IF_NO_MAIN kill-session session=%s", sessID)
+		tmuxCmd("kill-session", "-t", sessID).Run()
+		return true
 
 	case "delete_group":
 		name := input.ResolvedTarget
@@ -23934,7 +23945,7 @@ func focusContentPaneInActiveWindow() {
 			return
 		}
 	}
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+	if spawningActive() {
 		return
 	}
 	windowID := activeWindowIDIn(daemonSessionID())

@@ -827,7 +827,7 @@ func (l *Loop) doPaneLayoutOps() {
 	}
 	pl0 := time.Now()
 	preActive := l.coord.ActiveWindowID()
-	tmuxCmd("set-option", "-g", "@tabby_spawning", "1").Run()
+	setSpawning(true)
 	windows := l.coord.GetWindows()
 	pl1 := time.Now()
 	spawnWindowHeaders(l.server, l.deps.SessionID, customBorder, l.coord.desiredWindowHeaderHeight(), windows, l.coord)
@@ -893,7 +893,7 @@ func (l *Loop) doPaneLayoutOps() {
 		}
 	}
 	pl5 := time.Now()
-	tmuxCmd("set-option", "-g", "@tabby_spawning", "0").Run()
+	setSpawning(false)
 	startOSCPipes(windows)
 	pl6 := time.Now()
 	cleanupOrphanedHeaders(customBorder, l.coord, l.activeWindowID)

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"context"
 	"encoding/json"
 	"flag"
@@ -611,7 +612,7 @@ func spawnRenderersForNewWindows(server *daemon.Server, sessionID string, window
 		logEvent("SPAWN_SKIP reason=sidebar_hidden")
 		return false
 	}
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+	if spawningActive() {
 		logEvent("SPAWN_SKIP script_lock_active")
 		return false
 	}
@@ -907,10 +908,8 @@ func newlyMissingWindowClients(clientIDs []string, currentWindows, reported map[
 func cleanupOrphanedSidebars(windows []tmux.Window, coordinator *Coordinator) {
 	// Skip cleanup during new window creation to prevent killing windows
 	// whose content pane hasn't been detected yet (race condition).
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 	if coordinator != nil {
 		status := coordinator.NewWindowStatus()
@@ -1007,14 +1006,57 @@ func cleanupOrphanedSidebars(windows []tmux.Window, coordinator *Coordinator) {
 			if fsv, _ := tmuxCmd("show-window-option", "-v", "-t", windowID, "@tabby_fullscreen_sidebar").Output(); strings.TrimSpace(string(fsv)) == "1" {
 				continue
 			}
-			currentWindow := ""
-			currentWindow = activeWindowIDIn(daemonSessionID())
+			// Fork: never kill-window here. Hold the candidate for a grace
+			// period, re-read its panes, and then kill only the chrome panes
+			// — if they really were all that was left, tmux closes the window
+			// itself; if a content pane was misread (or arrived meanwhile),
+			// the worst case is a sidebar respawn instead of lost work.
+			now := time.Now()
+			first, seen := orphanSidebarFirstSeen[windowID]
+			if !seen {
+				orphanSidebarFirstSeen[windowID] = now
+				continue
+			}
+			if now.Sub(first) < 5*time.Second {
+				continue
+			}
+			delete(orphanSidebarFirstSeen, windowID)
+			confirm, err := tmuxCmd("list-panes", "-t", windowID, "-F",
+				"#{pane_id}|||#{pane_dead}|||#{pane_current_command}|||#{pane_start_command}").Output()
+			if err != nil {
+				continue
+			}
+			var chrome []string
+			content := 0
+			for _, line := range strings.Split(strings.TrimSpace(string(confirm)), "\n") {
+				parts := strings.SplitN(line, "|||", 4)
+				if len(parts) != 4 {
+					continue
+				}
+				if parts[1] == "1" {
+					continue
+				}
+				if paneIsSystemPane(parts[2], parts[3]) {
+					chrome = append(chrome, parts[0])
+				} else {
+					content++
+				}
+			}
+			if content > 0 || len(chrome) == 0 {
+				continue
+			}
+			currentWindow := activeWindowIDIn(daemonSessionID())
 			if currentWindow == windowID {
 				tmuxCmd("last-window").Run()
 			}
-			logEvent("CLEANUP_ORPHAN_SIDEBAR_WINDOW window=%s", windowID)
-			debugLog.Printf("Window %s has only system panes, closing window", windowID)
-			tmuxCmd("kill-window", "-t", windowID).Run()
+			logEvent("CLEANUP_ORPHAN_SIDEBAR_WINDOW window=%s chrome_panes=%d", windowID, len(chrome))
+			debugLog.Printf("Window %s has only system panes, closing its chrome panes", windowID)
+			for _, id := range chrome {
+				markSkipPreserveForWindow(id)
+				tmuxCmd("kill-pane", "-t", id).Run()
+			}
+		} else {
+			delete(orphanSidebarFirstSeen, windowID)
 		}
 	}
 }
@@ -1106,11 +1148,15 @@ func systemPaneToken(token string) bool {
 }
 
 func paneIsSystemPane(cmd string, startCmd string) bool {
-	for _, field := range strings.Fields(cmd) {
-		if systemPaneToken(field) {
-			return true
-		}
-	}
+	// Fork: classify by the START command only. Every tabby chrome pane is
+	// spawned with an explicit command (split-window ... 'tabby render
+	// sidebar'), so its start command always names it. The current command,
+	// by contrast, is whatever happens to be in the foreground: a user who
+	// runs `tabby theme toggle` or `tabby setup` from their shell briefly has
+	// pane_current_command == "tabby", and classifying on that made the
+	// orphan reaper see "only system panes" and kill their window — the
+	// session dying seconds after it was opened.
+	_ = cmd
 	for _, field := range strings.Fields(startCmd) {
 		if systemPaneToken(field) {
 			return true
@@ -1119,6 +1165,18 @@ func paneIsSystemPane(cmd string, startCmd string) bool {
 	return false
 }
 
+// anyClientAttached reports whether at least one tmux client is attached to
+// the server. Pane geometry is meaningless with no client (tmux parks
+// windows at the last size or 80x24), so destructive audits that reason
+// about widths must not run then.
+func anyClientAttached() bool {
+	clients, err := listAttachedClients()
+	return err != nil || len(clients) > 0 // on error, assume attached (safe side)
+}
+
+// orphanSidebarFirstSeen is the grace timer for cleanupOrphanedSidebars.
+var orphanSidebarFirstSeen = map[string]time.Time{}
+
 var orphanWindowFirstSeen = map[string]time.Time{}
 
 func cleanupOrphanWindowsByTmux(sessionID string, coordinator *Coordinator) {
@@ -1126,14 +1184,12 @@ func cleanupOrphanWindowsByTmux(sessionID string, coordinator *Coordinator) {
 		return
 	}
 
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_enable_orphan_window_kill").Output(); err != nil || strings.TrimSpace(string(out)) != "1" {
+	if !orphanKillEnabled() {
 		return
 	}
 
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil {
-		if strings.TrimSpace(string(out)) == "1" {
-			return
-		}
+	if spawningActive() {
+		return
 	}
 	if coordinator != nil {
 		status := coordinator.NewWindowStatus()
@@ -1978,6 +2034,11 @@ func watchdogCheckRenderers(server *daemon.Server, sessionID string, coordinator
 	if rendererBin == "" {
 		return
 	}
+	// Fork: with no client attached every width below is a parked default,
+	// and the "full-width sidebar" test would fire on a healthy window.
+	if !anyClientAttached() {
+		return
+	}
 
 	// Get all panes with PID and geometry info, scoped to our session.
 	watchdogArgs := []string{"list-panes", "-s"}
@@ -2054,8 +2115,9 @@ func watchdogCheckRenderers(server *daemon.Server, sessionID string, coordinator
 		if err != nil {
 			continue
 		}
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			// Process is dead but tmux hasn't noticed yet
+		if err := proc.Signal(syscall.Signal(0)); err != nil && errors.Is(err, os.ErrProcessDone) {
+			// Process is dead but tmux hasn't noticed yet. (A permission
+			// error means it is alive and merely not ours to signal.)
 			logEvent("ZOMBIE_PANE pane=%s pid=%d cmd=%s window=%s -- process dead, killing pane",
 				paneID, pid, cmd, windowID)
 			markSkipPreserveForWindow(paneID)
@@ -2123,7 +2185,7 @@ func panelAudit(sessionID string, coordinator *Coordinator) {
 	}
 
 	// Skip during legitimate state transitions to avoid false positives.
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+	if spawningActive() {
 		return
 	}
 	if status := coordinator.NewWindowStatus(); status.State == "inFlight" {
@@ -2636,7 +2698,7 @@ func restoreFocusState(coordinator *Coordinator) {
 			return
 		}
 	}
-	if out, err := tmuxCmd("show-option", "-gqv", "@tabby_spawning").Output(); err == nil && strings.TrimSpace(string(out)) == "1" {
+	if spawningActive() {
 		return
 	}
 
@@ -3515,4 +3577,25 @@ func Run(args []string) int {
 	tmuxhooks.ClearDaemonPresent(*sessionID)
 	server.Stop()
 	return 0
+}
+
+// orphanKillEnabled reads @tabby_enable_orphan_window_kill at most every 10s:
+// the option is off by default and never flips at runtime, but the pass that
+// checks it runs every tick.
+var (
+	orphanKillMu sync.Mutex
+	orphanKillOn bool
+	orphanKillAt time.Time
+)
+
+func orphanKillEnabled() bool {
+	orphanKillMu.Lock()
+	defer orphanKillMu.Unlock()
+	if time.Since(orphanKillAt) < 10*time.Second {
+		return orphanKillOn
+	}
+	out, err := tmuxCmd("show-option", "-gqv", "@tabby_enable_orphan_window_kill").Output()
+	orphanKillOn = err == nil && strings.TrimSpace(string(out)) == "1"
+	orphanKillAt = time.Now()
+	return orphanKillOn
 }

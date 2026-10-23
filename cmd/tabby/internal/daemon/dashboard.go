@@ -15,6 +15,8 @@
 package daemon
 
 import (
+	"time"
+	"sync"
 	"fmt"
 	"strconv"
 	"strings"
@@ -295,10 +297,46 @@ type dashWindowSnapshot struct {
 // dashboardActiveWindowID returns the window_id of the dashboard window for the
 // session (the one tagged @tabby_dashboard=1), or "" if none. Reads from tmux so
 // it is correct even after a daemon restart.
+// Looked up by a dozen per-tick passes; one list-windows round-trip per
+// second per session is plenty, and gather/restore invalidate it directly.
+var (
+	dashLookupMu sync.Mutex
+	dashLookup   = map[string]struct {
+		id string
+		at time.Time
+	}{}
+)
+
+func invalidateDashboardLookup() {
+	dashLookupMu.Lock()
+	dashLookup = map[string]struct {
+		id string
+		at time.Time
+	}{}
+	dashLookupMu.Unlock()
+}
+
 func dashboardActiveWindowID(sess string) string {
 	if sess == "" {
 		return ""
 	}
+	dashLookupMu.Lock()
+	if e, ok := dashLookup[sess]; ok && time.Since(e.at) < time.Second {
+		dashLookupMu.Unlock()
+		return e.id
+	}
+	dashLookupMu.Unlock()
+	id := dashboardActiveWindowIDUncached(sess)
+	dashLookupMu.Lock()
+	dashLookup[sess] = struct {
+		id string
+		at time.Time
+	}{id, time.Now()}
+	dashLookupMu.Unlock()
+	return id
+}
+
+func dashboardActiveWindowIDUncached(sess string) string {
 	out := tmuxOutputTrimmed("list-windows", "-t", sess, "-F", "#{window_id}\t#{@tabby_dashboard}")
 	for _, line := range dashLines(out) {
 		parts := strings.SplitN(line, "\t", 2)
@@ -372,6 +410,7 @@ func (c *Coordinator) enterDashboard() {
 		return
 	}
 	_ = tmuxRun("set-window-option", "-t", dashID, "@tabby_dashboard", "1")
+	invalidateDashboardLookup()
 	_ = tmuxRun("rename-window", "-t", dashID, dashboardWindowName)
 	_ = tmuxRun("set-window-option", "-t", dashID, "@tabby_name_locked", "1")
 	placeholder := firstToken(tmuxOutputTrimmed("list-panes", "-t", dashID, "-F", "#{pane_id}"), "%")

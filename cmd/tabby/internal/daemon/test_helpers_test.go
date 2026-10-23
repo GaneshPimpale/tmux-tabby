@@ -21,6 +21,11 @@ func testConfig() *config.Config {
 		{Name: "TestGroup", Pattern: `^TestGroup\|`, Theme: config.Theme{Bg: "#3498db"}},
 		{Name: "Default", Pattern: `.*`, Theme: config.Theme{Bg: "#2c3e50"}},
 	}
+	// The suite pins upstream's grouped tree with project-code labels; the
+	// fork's flat list and plain names default on and are covered by
+	// flat_sidebar_test.go.
+	cfg.Sidebar.Flat = config.Ptr(false)
+	cfg.Sidebar.PlainNames = config.Ptr(false)
 	// Sidebar header
 	cfg.Sidebar.Header.Text = config.Ptr("TABBY")
 	cfg.Sidebar.Header.Height = config.Ptr(3)
