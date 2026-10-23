@@ -4334,6 +4334,21 @@ func (c *Coordinator) composeTabBaseName(win tmux.Window) string {
 	return name
 }
 
+// isDefaultPaneTitle reports whether a pane title is just tmux's default (the
+// machine's hostname), which says nothing about what the pane is doing. Only
+// consulted in plain-names mode; a deliberately set title still shows.
+func isDefaultPaneTitle(title string) bool {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return false
+	}
+	short := host
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		short = host[:i]
+	}
+	return title == host || title == short
+}
+
 // activeForegroundProgram returns the command running in the window's active
 // content pane when it is a real program rather than a shell or a tabby
 // chrome pane, else "". This is the label a terminal tab bar shows while
@@ -14773,9 +14788,9 @@ func (c *Coordinator) generateMainContent(clientID string, width, height int) (s
 		// their header and tree. The branch glyphs are swapped per group so
 		// the row code below stays shared.
 		flatGroup := flat && group.Name == "Default"
-		treeBranchChar, treeBranchLastChar, treeContinueChar := treeBranchChar, treeBranchLastChar, treeContinueChar
+		treeBranchChar, treeBranchLastChar, treeContinueChar, treeConnectorChar := treeBranchChar, treeBranchLastChar, treeContinueChar, treeConnectorChar
 		if flatGroup {
-			treeBranchChar, treeBranchLastChar, treeContinueChar = "  ", "  ", " "
+			treeBranchChar, treeBranchLastChar, treeContinueChar, treeConnectorChar = "  ", "  ", " ", " "
 		}
 
 		// Auto-fill missing theme colors with intelligent defaults
@@ -15375,7 +15390,7 @@ func (c *Coordinator) generateMainContent(clientID string, width, height int) (s
 					paneLabel := pane.Command
 					if pane.LockedTitle != "" {
 						paneLabel = pane.LockedTitle
-					} else if pane.Title != "" && pane.Title != pane.Command {
+					} else if pane.Title != "" && pane.Title != pane.Command && !(c.config.Sidebar.UsesPlainNames() && isDefaultPaneTitle(pane.Title)) {
 						paneLabel = pane.Title
 					}
 					// SSH/mosh: avoid duplicating the host (already on row 1).
