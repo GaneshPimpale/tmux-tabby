@@ -1,0 +1,401 @@
+position: top
+height: 2
+style:
+    rounded: false
+    separator_left: ""
+    separator_right: ""
+overflow:
+    mode: scroll
+    indicator: ›
+groups:
+    - name: Default
+      pattern: .*
+      theme:
+        bg: transparent
+        fg: ""
+        active_bg: ""
+        active_fg: ""
+        inactive_bg: ""
+        inactive_fg: ""
+        icon: ""
+        active_indicator_bg: transparent
+      working_dir: ""
+bindings:
+    toggle_sidebar: ""
+    next_tab: ""
+    prev_tab: ""
+    next_window: ""
+    prev_window: ""
+    new_window: ""
+    kill_window: ""
+    new_window_global: ""
+    kill_window_global: ""
+    next_window_global: ""
+    prev_window_global: ""
+    swap_pane: ""
+sidebar:
+    position: ""
+    mode: ""
+    header:
+        height: 0
+        padding_bottom: 0
+        centered: null
+        active_color: false
+        fg: default
+        bg: transparent
+        bold: null
+    pane_headers: false
+    new_tab_button: false
+    close_button: false
+    new_group_button: false
+    resize_buttons: false
+    nav_buttons: false
+    show_empty_groups: true
+    sort_by: group
+    debug: false
+    line_height: 0
+    collapsible_widgets: []
+    action_zone: ""
+    action_priority: 0
+    prefix_mode: false
+    theme: default
+    theme_mode: ""
+    icon_style: ""
+    colors:
+        bg: ""
+        header_fg: default
+        active_fg: default
+        inactive_fg: default
+        inactive_lighten: 0
+        pane_fg: default
+        disclosure_fg: default
+        disclosure_expanded: ⊟
+        disclosure_collapsed: ⊞
+        active_indicator: ""
+        active_indicator_frames:
+            - ▶
+            - ▶
+            - ▶
+            - ▶
+            - ▶
+            - ' '
+        active_indicator_fg: ""
+        active_indicator_bg: ""
+        tree_fg: default
+        tree_bg: ""
+        tree_branch: ├─
+        tree_branch_last: └─
+        tree_connector: ─
+        tree_connector_panes: ┬
+        tree_continue: │
+    hide_predefined_colors: false
+    show_ssh_host: false
+    ssh_icon: ""
+    remote_hosts: []
+    new_tab_inherit_ssh: true
+    split_inherit_ssh: true
+pane_header:
+    active_fg: default
+    active_bg: default
+    inactive_fg: default
+    inactive_bg: default
+    command_fg: default
+    button_fg: ""
+    divider_fg: ""
+    border_from_tab: false
+    auto_border: false
+    border_lines: heavy
+    border_fg: default
+    border_bg: ""
+    active_border_fg: ""
+    active_border_bg: ""
+    dim_inactive: false
+    dim_opacity: 0.7
+    tint: false
+    tint_opacity: 0.08
+    custom_border: false
+    handle_color: ""
+    handle_icon: ""
+    draggable: false
+    collapse_expanded_icon: ▾
+    collapse_collapsed_icon: ▸
+    resize_grow_icon: '>'
+    resize_shrink_icon: <
+    resize_horizontal_grow_icon: '>'
+    resize_horizontal_shrink_icon: <
+    resize_vertical_grow_icon: ↓
+    resize_vertical_shrink_icon: ↑
+    resize_separator: ¦
+    terminal_bg: ""
+    native: true
+indicators:
+    activity:
+        enabled: false
+        icon: ●
+        color: '#f39c12'
+    bell:
+        enabled: false
+        icon: ◆
+        color: '#e74c3c'
+    silence:
+        enabled: false
+        icon: ○
+        color: '#95a5a6'
+    last:
+        enabled: false
+        icon: '-'
+        color: '#3498db'
+    busy:
+        enabled: false
+        icon: ""
+        color: ""
+    input:
+        enabled: false
+        icon: ""
+        color: ""
+prompt:
+    fg: ""
+    bg: ""
+    bold: false
+    shell_integration: null
+    fallback_icon: ""
+widgets:
+    clock:
+        enabled: false
+        format: ""
+        show_date: false
+        date_format: ""
+        single_line: false
+        separator: ""
+        fg: ""
+        bg: ""
+        position: ""
+        pin: false
+        priority: 0
+        divider: ""
+        divider_bottom: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    pet:
+        enabled: false
+        name: ""
+        style: ""
+        rows: 0
+        thoughts: false
+        thought_interval: 0
+        thought_speed: 0
+        position: ""
+        pin: false
+        hunger_decay: 0
+        poop_chance: 0
+        action_chance: 0
+        can_die: false
+        debug_bar: false
+        adventure_enabled: false
+        adventure_chance: 0
+        adventure_blood: false
+        adventure_vibe: ""
+        llm_provider: ""
+        llm_model: ""
+        llm_api_key: ""
+        llm_base_url: ""
+        thought_refresh_hours: 0
+        icons:
+            idle: ""
+            walking: ""
+            jumping: ""
+            playing: ""
+            eating: ""
+            sleeping: ""
+            happy: ""
+            hungry: ""
+            yarn: ""
+            food: ""
+            poop: ""
+            thought: ""
+            heart: ""
+            life: ""
+            hunger_icon: ""
+            happy_icon: ""
+            sad_icon: ""
+            ground: ""
+            blood: ""
+        qa:
+            disabled: false
+            cooldown_hours: 24
+            expire_hours: 48
+            teaser_every_n_thoughts: 3
+            free_text_disabled: false
+            llm_questions: false
+        fg: ""
+        bg: ""
+        priority: 0
+        divider: ""
+        divider_bottom: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    git:
+        enabled: false
+        style: ""
+        show_counts: false
+        show_insertions: false
+        show_stash: false
+        update_interval: 0
+        position: ""
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        branch_fg: ""
+        clean_fg: ""
+        dirty_fg: ""
+        ahead_fg: ""
+        behind_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    session:
+        enabled: false
+        style: ""
+        show_clients: false
+        show_windows: false
+        position: ""
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        session_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    stats:
+        enabled: false
+        style: ""
+        show_cpu: false
+        show_memory: false
+        show_battery: false
+        bar_style: ""
+        bar_width: 0
+        update_interval: 0
+        position: ""
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        cpu_fg: ""
+        memory_fg: ""
+        battery_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    claude:
+        enabled: false
+        style: ""
+        show_today: false
+        show_week: false
+        show_month: false
+        show_total: false
+        show_messages: false
+        db_path: ""
+        update_interval: 0
+        position: ""
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        cost_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    teamclaude:
+        enabled: false
+        url: ""
+        api_key: ""
+        style: nerd
+        show_session: false
+        show_weekly: false
+        show_current_only: false
+        bar_width: 8
+        update_interval: 60
+        position: bottom
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        bar_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+    kimi:
+        enabled: false
+        url: ""
+        api_key: ""
+        style: nerd
+        show_session: false
+        show_weekly: false
+        update_interval: 60
+        position: bottom
+        pin: false
+        priority: 0
+        fg: ""
+        bg: ""
+        bar_fg: ""
+        divider: ""
+        divider_fg: ""
+        padding_top: 0
+        padding_bottom: 0
+        margin_top: 0
+        margin_bottom: 0
+busy_detection:
+    extra_idle: []
+    ai_tools: []
+    idle_timeout: 10
+terminal_title:
+    enabled: true
+    # What kitty shows as the tab title: the running program, else the window name.
+    format: '#{?#{||:#{m:*sh,#{pane_current_command}},#{==:#{pane_current_command},tabby}},#{window_name},#{pane_current_command}}'
+auto_theme:
+    enabled: false
+    mode: dark
+    light: rose-pine-dawn
+    dark: rose-pine
+    sync_claude_code: false
+ai:
+    tab_summary:
+        max_words: 3
+        max_chars: 0
+        auto_generate: false
+        interval_seconds: 0
+        max_lines: 0
+        ai_summary_only: false
+        project_names: []
+        llm_provider: ""
+        llm_model: ""
+        llm_api_key: ""
+        llm_base_url: ""
+tab_names:
+    abbreviations: []
+landing:
+    enabled: null
+    command: ""
