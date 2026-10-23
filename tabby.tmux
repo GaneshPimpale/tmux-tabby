@@ -870,19 +870,35 @@ tmux bind-key k confirm-before -p 'Close window? (y/n)' "run-shell '$KILL_WINDOW
 # prefix + 0 toggles the all-panes dashboard (gather every pane into a tiled
 # grid, or restore). Replaces the default "select window 0" on this key;
 # windows 1-9 and the header tabs still reach every window.
-tmux bind-key 0 run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
-tmux bind-key g run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
+# Fork: the dashboard is opt-in (sidebar.dashboard: true). Off, prefix+0 keeps
+# tmux's default (select window 0) and g/L are left unbound.
+DASHBOARD=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^  dashboard:" | awk '{print $2}' || echo "")
+if [[ "$DASHBOARD" == "true" ]]; then
+    tmux bind-key 0 run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
+    tmux bind-key g run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
+fi
 
 # Override prefix+n / prefix+p (tmux's default next-window/previous-window) to go
 # through the tabby hook so minimized windows are skipped, same as Option+[/].
-tmux bind-key n run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN next-window"
-tmux bind-key p run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN prev-window"
+# Fork: in flat mode (the default) bind them natively — one tmux command instead
+# of a process spawn and a socket round-trip, and minimized windows live in a
+# holding session tmux's own next-window never visits anyway.
+FLAT=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^  flat:" | awk '{print $2}' || echo "")
+if [[ "$FLAT" == "false" ]]; then
+    tmux bind-key n run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN next-window"
+    tmux bind-key p run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN prev-window"
+else
+    tmux bind-key n next-window
+    tmux bind-key p previous-window
+fi
 
 # prefix + L opens the dashboard layout-style picker: an ASCII popup that
 # previews each native tmux arrangement (Grid/Columns/Rows/Main+stack/Main+row).
 # Choosing one applies it to the live dashboard and is remembered for the next
 # gather. Overrides tmux's default prefix+L (last-client), unused by tabby.
-tmux bind-key L run-shell -b "$CURRENT_DIR/bin/tabby dashboard-layout"
+if [[ "$DASHBOARD" == "true" ]]; then
+    tmux bind-key L run-shell -b "$CURRENT_DIR/bin/tabby dashboard-layout"
+fi
 
 # Direct window access with prefix + number (match tmux window indexes)
 tmux bind-key 1 select-window -t :1

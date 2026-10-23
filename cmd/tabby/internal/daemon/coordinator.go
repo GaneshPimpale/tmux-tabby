@@ -4282,6 +4282,20 @@ func (c *Coordinator) composeTabBaseName(win tmux.Window) string {
 		}
 	}
 
+	// Plain names: what a terminal's own tab bar would show. An AI tool's
+	// live summary is the most useful label it has; otherwise the program
+	// running in the active pane; otherwise the directory tmux already named
+	// the window after (via syncWindowNames). No project codes.
+	if c.config.Sidebar.UsesPlainNames() {
+		if summary != "" {
+			return summary
+		}
+		if prog := activeForegroundProgram(win); prog != "" {
+			return prog
+		}
+		return name
+	}
+
 	dirCode := c.windowDirCode(win)
 
 	// 2. A live AI work summary is present: it is the per-window task topic.
@@ -4305,6 +4319,30 @@ func (c *Coordinator) composeTabBaseName(win tmux.Window) string {
 
 	// 4. $HOME / unresolved: fall back to the plain window name.
 	return name
+}
+
+// activeForegroundProgram returns the command running in the window's active
+// content pane when it is a real program rather than a shell or a tabby
+// chrome pane, else "". This is the label a terminal tab bar shows while
+// something is running (htop, nvim, ssh).
+func activeForegroundProgram(win tmux.Window) string {
+	var fallback string
+	for _, p := range win.Panes {
+		if isAuxiliaryPane(p) {
+			continue
+		}
+		cmd := strings.TrimSpace(p.Command)
+		if cmd == "" || genericLauncherNames[strings.ToLower(cmd)] || tmux.IsAITool(cmd) {
+			continue
+		}
+		if p.Active {
+			return cmd
+		}
+		if fallback == "" {
+			fallback = cmd
+		}
+	}
+	return fallback
 }
 
 // remoteTabPlaceholderCode returns the short prefix a hook-less remote tab shows
@@ -14703,15 +14741,29 @@ func (c *Coordinator) generateMainContent(clientID string, width, height int) (s
 	}
 
 	// Persistent "0. Dashboard" entry above the first group.
-	c.appendDashboardRow(&s, &regions, &currentLine, clientID, width, inactiveFg, activeIndicator)
+	if c.config.Sidebar.ShowsDashboard() {
+		c.appendDashboardRow(&s, &regions, &currentLine, clientID, width, inactiveFg, activeIndicator)
+	}
 
 	// Iterate over grouped windows (synthetic remembered list while gathered),
 	// with minimized tabs collected into a muted "Minimized" group at the bottom.
 	grouped := c.sidebarRenderGroups()
 	numGroups := len(grouped)
+	flat := c.config.Sidebar.IsFlat()
 	for gi, group := range grouped {
 		isLastGroup := gi == numGroups-1
 		theme := group.Theme
+
+		// Flat mode: the catch-all Default group is not a thing the user made,
+		// so it gets no header and its windows sit at top level with blank
+		// space where the tree glyphs would go. Groups the user created keep
+		// their header and tree. The branch glyphs are swapped per group so
+		// the row code below stays shared.
+		flatGroup := flat && group.Name == "Default"
+		treeBranchChar, treeBranchLastChar, treeContinueChar := treeBranchChar, treeBranchLastChar, treeContinueChar
+		if flatGroup {
+			treeBranchChar, treeBranchLastChar, treeContinueChar = "  ", "  ", " "
+		}
 
 		// Auto-fill missing theme colors with intelligent defaults
 		isDarkBg := c.bgDetector.IsDarkBackground()
@@ -14759,7 +14811,9 @@ func (c *Coordinator) generateMainContent(clientID string, width, height int) (s
 		}
 
 		// Render group header
-		{
+		if flatGroup {
+			// Nothing to draw and nothing to click: the group is implicit.
+		} else {
 			bg := theme.Bg
 			if strings.EqualFold(bg, "transparent") {
 				bg = ""
@@ -14854,7 +14908,9 @@ func (c *Coordinator) generateMainContent(clientID string, width, height int) (s
 			currentLine++
 		}
 
-		if hasWindows {
+		if flatGroup {
+			// No header row, so no header regions.
+		} else if hasWindows {
 			// Must match the padded prefix rendered above, not the current
 			// icon's own width, so the toggle zone stays put across states.
 			iconWidth := disclosureW

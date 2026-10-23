@@ -529,6 +529,9 @@ type Sidebar struct {
 	ActionZone           string           `yaml:"action_zone"`            // Widget zone for action buttons: "top" or "bottom" (default: "bottom")
 	ActionPriority       int              `yaml:"action_priority"`        // Priority within zone (default: 90)
 	PrefixMode           bool             `yaml:"prefix_mode"`            // Flat window list with group prefixes (SD| NAME) instead of hierarchy
+	Flat                 *bool            `yaml:"flat,omitempty"`         // Browser-style list: ungrouped windows at top level with no "Default" header or tree glyphs; only groups the user made get a header (default: true)
+	PlainNames           *bool            `yaml:"plain_names,omitempty"`  // Tab labels like a terminal's tab bar: the running program, else the directory; no project codes (default: true)
+	Dashboard            *bool            `yaml:"dashboard,omitempty"`    // Show the "0. Dashboard" row and bind its keys (default: false)
 	Theme                string           `yaml:"theme"`                  // Color theme: rose-pine-dawn, catppuccin-mocha, dracula, nord, etc.
 	ThemeMode            string           `yaml:"theme_mode"`             // Theme detection: "auto" (default), "dark", or "light" (deprecated, use theme)
 	IconStyle            string           `yaml:"icon_style"`             // Global icon style: "emoji" (default), "nerd", "ascii" - applies to tree, disclosure, indicators
@@ -650,3 +653,15 @@ func DefaultConfigPath() string {
 func (s Sidebar) ShowsEmptyGroups() bool {
 	return s.ShowEmptyGroups == nil || *s.ShowEmptyGroups
 }
+
+// IsFlat reports whether ungrouped windows are listed flat, with no Default
+// header; true when the key is absent.
+func (s Sidebar) IsFlat() bool { return s.Flat == nil || *s.Flat }
+
+// UsesPlainNames reports whether tab labels are the plain program/directory
+// name rather than project codes; true when the key is absent.
+func (s Sidebar) UsesPlainNames() bool { return s.PlainNames == nil || *s.PlainNames }
+
+// ShowsDashboard reports whether the Dashboard row is listed; false when the
+// key is absent.
+func (s Sidebar) ShowsDashboard() bool { return s.Dashboard != nil && *s.Dashboard }
