@@ -146,12 +146,15 @@ tmux set-option -g allow-rename on
 tmux set-option -g automatic-rename-format '#{pane_current_command}'
 
 # Read pane header colors from config (with defaults)
-# Use exact match with leading spaces to avoid substring matches
-PANE_ACTIVE_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "^  active_fg:" | awk '{print $2}' | tr -d '"' || echo "")
-PANE_ACTIVE_BG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "^  active_bg:" | awk '{print $2}' | tr -d '"' || echo "")
-PANE_INACTIVE_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "^  inactive_fg:" | awk '{print $2}' | tr -d '"' || echo "")
-PANE_INACTIVE_BG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "^  inactive_bg:" | awk '{print $2}' | tr -d '"' || echo "")
-PANE_COMMAND_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "^  command_fg:" | awk '{print $2}' | tr -d '"' || echo "")
+# Keys are matched at any indentation: a hand-written config uses two
+# spaces, but SaveConfig (every menu-driven change) rewrites the file with
+# four, and an exact two-space match then silently fell through to the
+# defaults below (the #3498db borders after a colour change).
+PANE_ACTIVE_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+active_fg:" | awk '{print $2}' | tr -d '"' || echo "")
+PANE_ACTIVE_BG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+active_bg:" | awk '{print $2}' | tr -d '"' || echo "")
+PANE_INACTIVE_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+inactive_fg:" | awk '{print $2}' | tr -d '"' || echo "")
+PANE_INACTIVE_BG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+inactive_bg:" | awk '{print $2}' | tr -d '"' || echo "")
+PANE_COMMAND_FG=$(grep -A10 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+command_fg:" | awk '{print $2}' | tr -d '"' || echo "")
 
 # Apply defaults if not set
 PANE_ACTIVE_FG=${PANE_ACTIVE_FG:-#ffffff}
@@ -205,9 +208,9 @@ BORDER_FG=$(grep -A15 "^pane_header:" "$CONFIG_FILE" 2>/dev/null | grep "border_
 BORDER_FG=${BORDER_FG:-#444444}
 
 # Read prompt style colors from config (with defaults)
-PROMPT_FG=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep "^  fg:" | awk '{print $2}' | tr -d '"' || echo "")
-PROMPT_BG=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep "^  bg:" | awk '{print $2}' | tr -d '"' || echo "")
-PROMPT_BOLD=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep "^  bold:" | awk '{print $2}' || echo "")
+PROMPT_FG=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+fg:" | awk '{print $2}' | tr -d '"' || echo "")
+PROMPT_BG=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+bg:" | awk '{print $2}' | tr -d '"' || echo "")
+PROMPT_BOLD=$(grep -A5 "^prompt:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+bold:" | awk '{print $2}' || echo "")
 
 # Apply defaults if not set - black text on light gray background for legibility
 PROMPT_FG=${PROMPT_FG:-#000000}
@@ -872,7 +875,7 @@ tmux bind-key k confirm-before -p 'Close window? (y/n)' "run-shell '$KILL_WINDOW
 # windows 1-9 and the header tabs still reach every window.
 # Fork: the dashboard is opt-in (sidebar.dashboard: true). Off, prefix+0 keeps
 # tmux's default (select window 0) and g/L are left unbound.
-DASHBOARD=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^  dashboard:" | awk '{print $2}' || echo "")
+DASHBOARD=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+dashboard:" | awk '{print $2}' || echo "")
 if [[ "$DASHBOARD" == "true" ]]; then
     tmux bind-key 0 run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
     tmux bind-key g run-shell -b "$CURRENT_DIR/bin/tabby dashboard"
@@ -883,7 +886,7 @@ fi
 # Fork: in flat mode (the default) bind them natively — one tmux command instead
 # of a process spawn and a socket round-trip, and minimized windows live in a
 # holding session tmux's own next-window never visits anyway.
-FLAT=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^  flat:" | awk '{print $2}' || echo "")
+FLAT=$(grep -A40 "^sidebar:" "$CONFIG_FILE" 2>/dev/null | grep -E "^[[:space:]]+flat:" | awk '{print $2}' || echo "")
 if [[ "$FLAT" == "false" ]]; then
     tmux bind-key n run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN next-window"
     tmux bind-key p run-shell -b "TABBY_INVOKING_TTY='#{client_tty}' $HOOK_BIN prev-window"
